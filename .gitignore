@@ -1,0 +1,8 @@
+*parquet
+*png
+*vscode
+*pycache*
+*csv
+*egg-info
+*.parquet.gz
+*.ipynb_checkpoints

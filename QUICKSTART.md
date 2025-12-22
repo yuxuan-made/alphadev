@@ -18,6 +18,20 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+### Verify Installation
+
+```bash
+python -c "from alphadev import Backtester, BacktestConfig; print('✓ Installation successful')"
+```
+
+If you see any import errors, try creating a fresh virtual environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -e .
+```
+
 ## Your First Backtest in 5 Minutes
 
 ### Step 1: Prepare Your Data
@@ -430,6 +444,23 @@ print(test_data.head())
 
 # If you get this error, use batch mode instead:
 config = BacktestConfig(..., mode='batch')
+```
+
+### Issue: Import errors or package not found
+
+**Solution**: Verify installation and reinstall if needed:
+```bash
+# Check if installed
+pip list | grep alphadev
+
+# Reinstall
+pip uninstall alphadev
+pip install -e .
+
+# Or create fresh environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -e .
 ```
 
 ### Issue: Low Sharpe ratio or negative returns

@@ -36,16 +36,46 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 pip install alphadev
 ```
 
-### From Source
+### From Source (Recommended for Development)
 ```bash
 git clone https://github.com/yourusername/alphadev.git
 cd alphadev
 pip install -e .
 ```
 
-### Development Installation
+### From Source (Production)
+```bash
+pip install git+https://github.com/yourusername/alphadev.git
+```
+
+### With Development Dependencies
 ```bash
 pip install -e ".[dev]"
+```
+
+### Verify Installation
+```bash
+python -c "from alphadev import Backtester, BacktestConfig; print('✓ Installation successful')"
+```
+
+### Troubleshooting
+
+**Import errors?** Check if the package is installed:
+```bash
+pip list | grep alphadev
+```
+
+**Dependency conflicts?** Create a fresh virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -e .
+```
+
+**Need to reinstall?**
+```bash
+pip uninstall alphadev
+pip install -e .
 ```
 
 ## Quick Start
@@ -800,13 +830,68 @@ Raw Market Data
 
 MIT License
 
+## Development
+
+### Running Tests
+```bash
+pytest
+```
+
+### Code Formatting
+```bash
+# Format code
+black alphadev/
+
+# Sort imports
+isort alphadev/
+```
+
+### Type Checking
+```bash
+mypy alphadev/
+```
+
+### Linting
+```bash
+flake8 alphadev/
+```
+
+### Building the Package
+
+```bash
+# Install build tool
+pip install build
+
+# Build distribution
+python -m build
+
+# Creates:
+# - dist/alphadev-0.1.0.tar.gz (source)
+# - dist/alphadev-0.1.0-py3-none-any.whl (wheel)
+```
+
+### Publishing to PyPI
+
+**Test PyPI (for testing):**
+```bash
+pip install twine
+python -m twine upload --repository testpypi dist/*
+pip install --index-url https://test.pypi.org/simple/ alphadev
+```
+
+**Production PyPI:**
+```bash
+python -m twine upload dist/*
+```
+
 ## Contributing
 
 Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch
 3. Add tests for new functionality
-4. Submit a pull request
+4. Ensure code passes linting and type checking
+5. Submit a pull request
 
 ## Citation
 
@@ -826,6 +911,7 @@ If you use this library in your research, please cite:
 - [QUICKSTART.md](QUICKSTART.md) - Step-by-step tutorial for new users
 - [examples/](examples/) - Complete working examples
 - Package documentation in code docstrings
+```
 Feature (pure computation, no I/O dependencies)
     ↓
 DataManager (Get or Compute: load cached OR compute fresh)
@@ -836,6 +922,7 @@ Alpha Signal (pure computation, no I/O dependencies)
     ↓
 DataManager (persist results)
 ```
+---------------------------------------------------------------------------
 
 ### Old Architecture (Legacy)
 

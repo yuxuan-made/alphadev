@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from ..data.alpha_loader import AlphaRankLoader
+from ..data.loaders.alpha_loader import AlphaRankLoader
 
 
 def compute_cross_sectional_rank_correlation(

@@ -57,36 +57,50 @@ class AlphaRankLoader(DataLoader):
         for symbol in symbols:
             symbol_dir = self.alpha_base_path / symbol
             
+            # 如果连这个品种的目录都没有，直接跳过该品种
             if not symbol_dir.exists():
                 continue
             
             current_date = start_date
             while current_date <= end_date:
                 date_str = current_date.strftime("%Y-%m-%d")
-                file_path = symbol_dir / f"{date_str}.parquet.gz"
                 
-                if file_path.exists():
-                    try:
-                        df = read_parquet_gz(file_path)
-                        # Convert nullable integer ranks back to float for downstream numpy ops
-                        df = df.apply(
-                            lambda col: col.astype(float) if pd.api.types.is_integer_dtype(col) else col
-                        )
-                        
-                        if self.alpha_names is not None:
-                            available = [col for col in self.alpha_names if col in df.columns]
-                            if available:
-                                df = df[available]
-                            else:
-                                current_date = current_date + pd.Timedelta(days=1)
-                                continue
-                        
-                        df["symbol"] = symbol
-                        df = df.set_index("symbol", append=True)
-                        
-                        symbol_data[symbol].append(df)
-                    except Exception as exc:
-                        print(f"Warning: Failed to load {file_path}: {exc}")
+                # 【修改点】：
+                # 这里我们默认构造 .parquet 路径。
+                # read_parquet_gz 内部会自动检查：
+                # 1. 存在 xxx.parquet? -> 读它
+                # 2. 不存在? 尝试找 xxx.parquet.gz -> 读它
+                # 3. 都不存在? -> 抛出 FileNotFoundError
+                file_path = symbol_dir / f"{date_str}.parquet"
+                
+                try:
+                    df = read_parquet_gz(file_path)
+                    
+                    # 兼容性处理：把旧的整数 Rank 转为 float，防止后续计算报错
+                    df = df.apply(
+                        lambda col: col.astype(float) if pd.api.types.is_integer_dtype(col) else col
+                    )
+                    
+                    # 筛选需要的列
+                    if self.alpha_names is not None:
+                        available = [col for col in self.alpha_names if col in df.columns]
+                        if available:
+                            df = df[available]
+                        else:
+                            # 如果这一天的数据里没有我们要的 alpha 列，也跳过
+                            raise ValueError(f"Columns {self.alpha_names} not found")
+                    
+                    df["symbol"] = symbol
+                    df = df.set_index("symbol", append=True)
+                    
+                    symbol_data[symbol].append(df)
+
+                except FileNotFoundError:
+                    # 这一天的数据缺失，我们直接忽略，继续循环处理下一天 (current_date += 1)
+                    pass
+                except Exception as exc:
+                    # 其他错误（如文件损坏）打印警告但不中断整个回测
+                    print(f"Warning: Failed to load {file_path}: {exc}")
                 
                 current_date = current_date + pd.Timedelta(days=1)
         

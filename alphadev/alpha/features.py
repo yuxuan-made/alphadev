@@ -4,84 +4,80 @@ This module provides utilities for managing preprocessed data features.
 
 What is a Feature?
 - A feature is PREPROCESSED DATA from market data (e.g., prices, volume, order book)
-- Features are stored and loaded from disk for reuse
-- Features are the raw inputs that operators work with
+- Features are pure computation - NO I/O dependencies
+- Features provide stable signatures for caching
+- DataManager handles all I/O operations (loading/saving)
 
 Design Philosophy:
-- Features represent PREPROCESSED DATA (not transformations)
-- Features handle COMPUTATION + SAVING of preprocessed data
-- Features do NOT load from disk (that's DataLoader's job)
+- Features represent PURE COMPUTATION (no I/O side effects)
+- Features provide deterministic signatures based on params
+- DataManager in data package handles "Get or Compute" logic
 - Features output DataFrames with MultiIndex (timestamp, symbol)
-- Operators (rolling mean, rolling volatility, etc.) are separate classes that transform features
+- Operators (rolling mean, rolling volatility, etc.) transform features
 
-Feature Modes:
-1. Real-time: Compute features on-the-fly from raw data
-2. Pre-compute: Compute once, save to disk, load via DataLoader later
+Feature Architecture:
+1. Pure computation: Feature.compute() preprocesses raw data
+2. Stable signature: Feature.get_signature() for cache lookup
+3. DataManager: Handles load-or-compute pattern in data package
+4. No direct save/load: Features don't touch disk
 
-Architecture:
-- Feature.compute(): Preprocesses raw market data into features
-- Feature.save(): Saves preprocessed features to disk (old-ver: snappy+gzip; new-ver: zstd)
-- DataLoader: Loads pre-computed features from disk (not in this module)
-- Operators: Transform features (rolling operations, cross-sectional ops, etc.)
-- Alpha functions: Combine operator outputs into trading signals
-
-Storage Format:
-- Path: {feature_dir}/{feature_name}/{params}/{symbol}/{YYYYMMDD}.parquet (old-ver: .parquet.gz)
-  where {params} is a string like "frequency=1h_market=spot" from the params dict
-- Compression: Parquet with zstd (old-ver: snappy + gzip, still supported, will migrate it in the future)
+Storage Format (managed by DataManager):
+- Path: {feature_dir}/{feature_name}/{signature}/{symbol}/{YYYYMMDD}.parquet
+- Compression: Parquet with zstd (old: snappy + gzip, auto-detected)
 - Organization: One file per symbol per date
 """
 from __future__ import annotations
 
-# import gzip
+import hashlib
+import json
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-import numpy as np
 import pandas as pd
-
-from ..data.savers import FeatureSaver
 
 
 # Default directory for saving pre-computed features
-# Users can override this when saving/loading features
-DEFAULT_FEATURE_DIR = Path("/var/lib/MarketData/Binance/features")
+# Users can override this when using DataManager
+DEFAULT_FEATURE_DIR = Path("G:/crypto/Features")
 
 
 class Feature(ABC):
     """Base class for preprocessed data features.
     
-    Features represent PREPROCESSED DATA from raw market data.
-    They handle computation (preprocessing) and saving to disk.
+    Features represent PURE COMPUTATION from raw market data.
+    All I/O operations are handled by DataManager in the data package.
     
-    Note: For transformations like rolling mean, rolling volatility, etc.,
-    use Operator classes instead. Features are the raw preprocessed inputs.
+    Key Principles:
+    - Pure computation: No I/O dependencies
+    - Stable signatures: Deterministic hash from params
+    - Stateful for streaming: Maintain state across chunks
     
-    Features maintain state across chunks for streaming backtests.
-
     Attributes:
         - params: Dictionary of parameters defining this feature instance
 
     Mandatory Methods:
         - compute(): Preprocess raw market data into feature data
-        - save(): Save preprocessed feature data to disk
+        - reset(): Reset state for new backtest runs
         - get_columns(): List of columns produced by this feature
-        - compute_and_save(): Compute + save over a date range
     
-    Optional Methods:
-        - update(): Update feature data from last saved date to a new end date
+    Provided Methods:
+        - get_signature(): Generate stable hash from params (for caching)
         - get_name(): Unique name for this feature instance
-        - get_save_dir(): Directory path for saving this feature's data
-        - save(): Save preprocessed feature data using FeatureSaver
-        (- __call__(): Shortcut to compute())
+        - __call__(): Shortcut to compute()
+    
+    Legacy Methods (Deprecated):
+        - save(), compute_and_save(), update(): Now handled by DataManager
+        - get_save_dir(): Now handled by DataManager
     """
     params : dict[str, Any] = {}
     
-    @abstractmethod # A Feature object must implement compute(), reset(), get_columns(), compute_and_save()
+    @abstractmethod
     def compute(self, data: pd.DataFrame) -> pd.DataFrame:
         """Preprocess raw market data into feature data.
+        
+        Pure computation - no I/O operations.
         
         Args:
             data: Raw market data with MultiIndex (timestamp, symbol)
@@ -101,7 +97,7 @@ class Feature(ABC):
         """Return list of column names this feature produces.
         
         This is used by:
-        - FeatureLoader to report what columns are available
+        - DataManager to validate output
         - Documentation and introspection
         - Validation that feature output matches specification
         
@@ -111,116 +107,39 @@ class Feature(ABC):
             or ['rolling_corr_close_volume']
         """
         pass
-
-    @abstractmethod
-    def compute_and_save(
-        self,
-        start_date: date,
-        end_date: date,
-        *args,
-        **kwargs,
-    ) -> dict[tuple[str, date], Path]:
-        """Compute feature values for a date range and persist them."""
-        pass
-
-    def update(self, end_date: Optional[date] = None, feature_dir: Optional[Path] = None) -> dict[tuple[str, date], Path]:
-        """Update feature data by computing from the latest saved date to end_date.
-        
-        This method finds the most recent date that the feature has been saved,
-        then calls compute_and_save to process data from the next date to end_date.
-        
-        Args:
-            end_date: End date for updating (defaults to today if None)
-            feature_dir: Directory where features are saved (defaults to DEFAULT_FEATURE_DIR)
-        
-        Returns:
-            Dictionary mapping (symbol, date) to saved file path for newly computed data
-        """
-        
-        # Set end_date to today if not provided
-        if end_date is None:
-            end_date = date.today()
-        
-        # Get the feature save directory
-        feature_path = self.get_save_dir(feature_dir)
-        
-        # Find the latest saved date across all symbols
-        latest_date = None
-        
-        if feature_path.exists():
-            for symbol_dir in feature_path.iterdir():
-                if symbol_dir.is_dir():
-                    for file_path in symbol_dir.glob("*.parquet*"):
-                        if file_path.suffix == ".gz":
-                            date_str = file_path.with_suffix("").stem
-                        else:
-                            date_str = file_path.stem
-                        try:
-                            file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                            if latest_date is None or file_date > latest_date:
-                                latest_date = file_date
-                        except ValueError:
-                            continue
-        
-        # If no existing data found, return empty dict (user should specify start_date)
-        if latest_date is None:
-            return {}
-        
-        # Compute from the next day after latest_date
-        start_date = latest_date + timedelta(days=1)
-        
-        # Only update if there's a date range to process
-        if start_date <= end_date:
-            return self.compute_and_save(start_date, end_date)
-        else:
-            # Already up to date
-            return {}
     
     def get_name(self) -> str:
         """Return a unique name for this feature.
         
-        This name is used for:
-        - Saving feature files to disk
-        - Identifying pre-computed features in data loaders
-        - Column naming in output DataFrames
-        
-        Default implementation uses class name and key parameters.
+        Used for organizing cached features on disk.
+        Default implementation uses class name.
         Override for custom naming.
         """
         return self.__class__.__name__
     
-    def get_save_dir(self, feature_dir: Optional[Path] = None) -> Path:
-        """Get the directory path where this feature's data will be saved.
+    def get_signature(self) -> str:
+        """Generate a stable signature (hash) for this feature configuration.
         
-        Returns the complete path including feature name and parameters:
-        {feature_dir}/{feature_name}/{params}/
-        
-        Args:
-            feature_dir: Base directory for features (defaults to DEFAULT_FEATURE_DIR)
+        The signature is a deterministic hash of the feature's parameters,
+        used by DataManager for cache lookup and validation.
         
         Returns:
-            Path object for the feature's save directory
+            Hexadecimal hash string (e.g., 'a3f5b2c1...')
         """
-        if feature_dir is None:
-            feature_dir = DEFAULT_FEATURE_DIR
-        
-        # Create parameter string from all params (sorted for consistency)
+        # Sort params for deterministic ordering
         if self.params:
-            param_parts = [f"{k}={v}" for k, v in sorted(self.params.items())]
-            param_str = "_".join(param_parts)
+            param_str = json.dumps(self.params, sort_keys=True, default=str)
         else:
-            param_str = "default"
+            param_str = "{}"
         
-        return feature_dir / self.get_name() / param_str
-    
-    def save(
-        self,
-        data: pd.DataFrame,
-        feature_dir: Optional[Path] = None,
-    ) -> dict[tuple[str, date], Path]:
-        """Save preprocessed feature data using the shared FeatureSaver."""
-        saver = FeatureSaver()
-        return saver.save(self, data, feature_dir)
+        # Create hash from feature name + params
+        signature_input = f"{self.get_name()}:{param_str}"
+        return hashlib.sha256(signature_input.encode()).hexdigest()[:16]
     
     def __call__(self, data: pd.DataFrame) -> pd.DataFrame:
         return self.compute(data)
+
+
+# Legacy code - kept for backward compatibility but deprecated
+# Use DataManager instead for I/O operations
+__all__ = ["Feature", "DEFAULT_FEATURE_DIR"]

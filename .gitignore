@@ -5,4 +5,5 @@
 *csv
 *egg-info
 *.parquet.gz
-*.ipynb_checkpoints
+*.
+tests/

@@ -13,7 +13,10 @@ from .base import DataLoader
 
 
 class AggTradeDataLoader(DataLoader):
-    """Loader for aggregate trade data from daily parquet files."""
+    """Loader for aggregate trade data from daily parquet files.
+    
+    Supports both .parquet (ZSTD) and .parquet.gz (Snappy+GZIP) formats.
+    """
     
     def __init__(
         self,
@@ -28,18 +31,33 @@ class AggTradeDataLoader(DataLoader):
         return self.columns
     
     def _get_file_path(self, symbol: str, trade_date: date) -> Optional[Path]:
+        """Find the file path, preferring .parquet over .parquet.gz"""
         key = (symbol, trade_date)
         if key in self._file_cache:
             return self._file_cache[key]
         
         symbol_dir = self.base_dir / symbol
-        filename = f"{symbol}-aggTrades-{trade_date.strftime('%Y-%m-%d')}.parquet.gz"
-        file_path = symbol_dir / filename
-        result = file_path if file_path.exists() else None
-        self._file_cache[key] = result
-        return result
+        date_str = trade_date.strftime('%Y-%m-%d')
+        
+        # 1. Try New Format (.parquet)
+        filename_new = f"{symbol}-aggTrades-{date_str}.parquet"
+        path_new = symbol_dir / filename_new
+        if path_new.exists():
+            self._file_cache[key] = path_new
+            return path_new
+            
+        # 2. Try Old Format (.parquet.gz)
+        filename_old = f"{symbol}-aggTrades-{date_str}.parquet.gz"
+        path_old = symbol_dir / filename_old
+        if path_old.exists():
+            self._file_cache[key] = path_old
+            return path_old
+        
+        # 3. Not Found
+        self._file_cache[key] = None
+        return None
     
-    def _read_parquet_gz(
+    def _read_data(
         self,
         path: Path,
         columns: Optional[List[str]] = None,
@@ -47,8 +65,12 @@ class AggTradeDataLoader(DataLoader):
         cols_to_load = ['transact_time']
         if columns:
             cols_to_load.extend([c for c in columns if c != 'transact_time'])
-        df = read_parquet_gz(path)
-        return df[cols_to_load]
+            
+        # Remove duplicates
+        cols_to_load = list(dict.fromkeys(cols_to_load))
+        
+        df = read_parquet_gz(path, columns=cols_to_load)
+        return df
     
     def load_date_range(
         self,
@@ -71,13 +93,17 @@ class AggTradeDataLoader(DataLoader):
                 if file_path is None:
                     continue
                 try:
-                    df = self._read_parquet_gz(file_path, self.columns)
+                    df = self._read_data(file_path, self.columns)
                     if df.empty:
                         continue
+                    
                     df['symbol'] = symbol
                     df = df.rename(columns={'transact_time': 'timestamp'})
+                    
                     cols = ['timestamp', 'symbol'] + self.columns
-                    df = df[[c for c in cols if c in df.columns]]
+                    available_cols = [c for c in cols if c in df.columns]
+                    df = df[available_cols]
+                    
                     symbol_data[symbol].append(df)
                 except Exception as exc:
                     print(f"Warning: Failed to load {file_path}: {exc}")
@@ -93,6 +119,11 @@ class AggTradeDataLoader(DataLoader):
             )
         
         result = pd.concat(dfs, ignore_index=True)
+        
+        # Ensure timestamps are datetime (if they aren't already)
+        if not pd.api.types.is_datetime64_any_dtype(result['timestamp']):
+             result['timestamp'] = pd.to_datetime(result['timestamp'], unit='ms')
+
         result = result.set_index(['timestamp', 'symbol']).sort_index()
         all_timestamps = result.index.get_level_values('timestamp').unique()
         full_index = pd.MultiIndex.from_product(

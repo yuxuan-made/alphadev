@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 
 from .base import DataSaver
-from ..fetch_data import read_parquet_gz
+from ..fetch_data import read_parquet_gz, save_df_to_parquet
 from ..loaders.alpha_loader import DEFAULT_ALPHA_DIR
 
 
@@ -19,6 +19,10 @@ class AlphaRankSaver(DataSaver):
     File layout: {alpha_base_path}/{symbol}/{YYYY-MM-DD}.parquet[.gz]
     Index in files: timestamp
     Columns: one or more alpha names (e.g., MomentumRankAlpha)
+    
+    This saver intelligently handles file formats:
+    1. If a file already exists (gz or zstd), it respects that format to maintain consistency.
+    2. If no file exists, it defaults to .parquet (ZSTD) unless configured otherwise.
     """
 
     def save(
@@ -26,7 +30,20 @@ class AlphaRankSaver(DataSaver):
         alpha_name: str,
         data: pd.DataFrame,
         alpha_base_path: Optional[Path] = None,
+        output_format: str = "auto",  # Options: "auto", "zstd", "gz"
     ) -> Dict[Tuple[str, date], Path]:
+        """
+        Save alpha data.
+        
+        Args:
+            alpha_name: Name of the alpha column.
+            data: DataFrame with MultiIndex (timestamp, symbol) and the alpha column.
+            alpha_base_path: Base directory for alphas.
+            output_format: 'auto' (respect existing or default to zstd), 'zstd' (.parquet), or 'gz' (.parquet.gz).
+            
+        Returns:
+            Dictionary mapping (symbol, date) to the saved file path.
+        """
         if alpha_base_path is None:
             alpha_base_path = DEFAULT_ALPHA_DIR
         alpha_base_path.mkdir(parents=True, exist_ok=True)
@@ -34,10 +51,15 @@ class AlphaRankSaver(DataSaver):
         if not isinstance(data.index, pd.MultiIndex):
             raise ValueError("Data must have MultiIndex (timestamp, symbol)")
 
-        # If input column is 'alpha_rank', store under the provided alpha_name
+        # Prepare data: ensure we have the correct column name
         df = data.copy()
+        # If the dataframe has a generic 'alpha_rank' column, rename it to the specific alpha name
         if 'alpha_rank' in df.columns and alpha_name != 'alpha_rank':
             df = df.rename(columns={'alpha_rank': alpha_name})
+        
+        # Or if it's a single column dataframe, assume that is our alpha
+        elif df.shape[1] == 1 and df.columns[0] != alpha_name:
+             df = df.rename(columns={df.columns[0]: alpha_name})
 
         saved_files: Dict[Tuple[str, date], Path] = {}
         symbols = sorted(set(df.index.get_level_values('symbol')))
@@ -48,129 +70,74 @@ class AlphaRankSaver(DataSaver):
 
             symbol_data = df.xs(symbol, level='symbol')
             dates = symbol_data.index.date
+            
             for current_date in sorted(set(dates)):
                 mask = dates == current_date
                 date_data = symbol_data[mask]
                 if date_data.empty:
                     continue
 
-                parquet_path = symbol_dir / f"{current_date.strftime('%Y-%m-%d')}.parquet"
-                gz_path = symbol_dir / f"{parquet_path.name}.gz"
+                # Define potential paths
+                date_str = current_date.strftime('%Y-%m-%d')
+                parquet_path = symbol_dir / f"{date_str}.parquet"     # ZSTD
+                gz_path = symbol_dir / f"{date_str}.parquet.gz"       # GZIP
 
-                # If gz file exists, load and merge columns
+                target_path = parquet_path # Default to new format (ZSTD)
+                existing_df = None
+
+                # 1. Check for existing files to determine path and load content
                 if gz_path.exists():
                     try:
-                        existing = read_parquet_gz(gz_path)
-                        merged = pd.merge(
-                            existing,
-                            date_data,
-                            left_index=True,
-                            right_index=True,
-                            how='outer',
-                            suffixes=('_old', '')
-                        )
-                        old_col = f"{alpha_name}_old"
-                        if old_col in merged.columns:
-                            merged = merged.drop(columns=[old_col])
-                        merged = merged.sort_index()
-                        date_data = merged
+                        existing_df = read_parquet_gz(gz_path)
+                        if output_format == "auto":
+                            target_path = gz_path  # Keep using GZ if it exists
                     except Exception as exc:
-                        print(f"Warning: Could not merge with existing {gz_path}: {exc}. Overwriting.")
-
-                # Store as zstd parquet (no outer gzip for simplicity and speed)
-                date_data.to_parquet(parquet_path, engine='pyarrow', compression='zstd')
-                saved_files[(symbol, current_date)] = parquet_path
-
-        return saved_files
-
-
-__all__ = ["AlphaRankSaver"]"""Saver for alpha rank outputs."""
-
-from __future__ import annotations
-
-from datetime import date
-from pathlib import Path
-from typing import Dict, Optional, Tuple
-
-import pandas as pd
-
-from ..fetch_data import read_parquet_gz
-from ..loaders.alpha_loader import DEFAULT_ALPHA_DIR
-from .base import DataSaver
-
-
-class AlphaRankSaver(DataSaver):
-    """Persist alpha ranks and merge with existing files when needed."""
-
-    def save(
-        self,
-        alpha_name: str,
-        data: pd.DataFrame,
-        alpha_base_path: Optional[Path] = None,
-    ) -> Dict[Tuple[str, date], Path]:
-        if alpha_base_path is None:
-            alpha_base_path = DEFAULT_ALPHA_DIR
-
-        alpha_base_path.mkdir(parents=True, exist_ok=True)
-
-        if not isinstance(data.index, pd.MultiIndex):
-            raise ValueError("Data must have MultiIndex (timestamp, symbol)")
-
-        if data.shape[1] == 1 and data.columns[0] != alpha_name:
-            data = data.rename(columns={data.columns[0]: alpha_name})
-
-        saved_files: Dict[Tuple[str, date], Path] = {}
-
-        symbols = data.index.get_level_values("symbol")
-        unique_symbols = sorted(set(symbols))
-
-        for symbol in unique_symbols:
-            symbol_path = alpha_base_path / symbol
-            symbol_path.mkdir(parents=True, exist_ok=True)
-
-            symbol_data = data.xs(symbol, level="symbol")
-            dates = symbol_data.index.date
-            unique_dates = sorted(set(dates))
-
-            for current_date in unique_dates:
-                mask = dates == current_date
-                date_data = symbol_data[mask]
-                if date_data.empty:
-                    continue
-
-                parquet_path = symbol_path / f"{current_date.strftime('%Y-%m-%d')}.parquet"
-                gz_path = symbol_path / f"{current_date.strftime('%Y-%m-%d')}.parquet.gz"
-
-                merged_df = date_data
-                existing_path = gz_path if gz_path.exists() else parquet_path
-
-                if existing_path.exists():
+                        print(f"Warning: Could not load existing file {gz_path}: {exc}. Overwriting.")
+                
+                elif parquet_path.exists():
                     try:
-                        existing_data = read_parquet_gz(existing_path)
-                        merged_df = self._merge(existing_data, date_data, alpha_name)
+                        existing_df = read_parquet_gz(parquet_path)
+                        # target_path is already parquet_path
                     except Exception as exc:
-                        print(f"Warning: Could not load existing file {existing_path}: {exc}. Overwriting.")
+                        print(f"Warning: Could not load existing file {parquet_path}: {exc}. Overwriting.")
 
-                merged_df.to_parquet(parquet_path, engine="pyarrow", compression="zstd")
-                saved_files[(symbol, current_date)] = parquet_path
+                # 2. Apply format override if specified
+                if output_format == "gz":
+                    target_path = gz_path
+                elif output_format == "zstd":
+                    target_path = parquet_path
+
+                # 3. Merge with existing data if present
+                final_df = date_data
+                if existing_df is not None:
+                    final_df = self._merge(existing_df, date_data, alpha_name)
+
+                # 4. Save using the unified saver function
+                # Note: If we switched formats (e.g. from gz to zstd), we might ideally delete the old file,
+                # but to be safe we currently just write the new one. Clean up can be done separately.
+                save_df_to_parquet(final_df, target_path)
+                saved_files[(symbol, current_date)] = target_path
 
         return saved_files
 
     @staticmethod
     def _merge(existing: pd.DataFrame, incoming: pd.DataFrame, alpha_name: str) -> pd.DataFrame:
+        """Merge incoming alpha data with existing data for the same day."""
+        # Align indices and merge
         merged = pd.merge(
             existing,
             incoming,
             left_index=True,
             right_index=True,
-            how="outer",
-            suffixes=("_old", ""),
+            how='outer',
+            suffixes=('_old', '')
         )
-
-        old_column = f"{alpha_name}_old"
-        if old_column in merged.columns:
-            merged = merged.drop(columns=[old_column])
-
+        
+        # Remove the old version of the column if it exists (overwrite with new)
+        old_col = f"{alpha_name}_old"
+        if old_col in merged.columns:
+            merged = merged.drop(columns=[old_col])
+            
         merged = merged.sort_index()
         return merged
 

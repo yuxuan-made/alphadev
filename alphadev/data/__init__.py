@@ -12,6 +12,7 @@ from .loaders import (
 )
 from .savers import DataSaver, FeatureSaver, AlphaRankSaver
 from .fetch_data import read_parquet_gz
+from .manager import DataManager
 
 __all__ = [
     "DataLoader",
@@ -25,5 +26,6 @@ __all__ = [
     "DataSaver",
     "FeatureSaver",
     "AlphaRankSaver",
+    "DataManager",
     "read_parquet_gz",
 ]

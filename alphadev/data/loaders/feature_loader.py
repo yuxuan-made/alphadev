@@ -52,19 +52,30 @@ class FeatureLoader(DataLoader):
         
         for symbol in symbols:
             symbol_dir = self._save_dir / symbol
+            # 只要目录存在就开始尝试读取
+            if not symbol_dir.exists():
+                continue
+
             current_date = start_date
             while current_date <= end_date:
                 date_str = current_date.strftime("%Y-%m-%d")
-                file_path = symbol_dir / f"{date_str}.parquet.gz"
                 
-                if file_path.exists():
-                    try:
-                        df = read_parquet_gz(file_path)
-                        df['symbol'] = symbol
-                        df = df.set_index('symbol', append=True)
-                        symbol_data[symbol].append(df)
-                    except Exception as exc:
-                        print(f"Warning: Failed to load {file_path}: {exc}")
+                # 构造一个优先尝试的路径 (比如 .parquet)，如果不存 read_parquet_gz 会自动找 .parquet.gz
+                # 我们这里默认传不带 .gz 的，利用 read_parquet_gz 的容错
+                # read_parquet_gz 有容错，会处理 .parquet 或 .parquet.gz 的查找
+                file_path = symbol_dir / f"{date_str}.parquet"
+                
+                try:
+                    # read_parquet_gz 会处理 .parquet 或 .parquet.gz 的查找
+                    df = read_parquet_gz(file_path)
+                    df['symbol'] = symbol
+                    df = df.set_index('symbol', append=True)
+                    symbol_data[symbol].append(df)
+                except FileNotFoundError:
+                    # 这一天的数据不存在，跳过
+                    pass
+                except Exception as exc:
+                    print(f"Warning: Failed to load {file_path}: {exc}")
                 
                 current_date += timedelta(days=1)
         

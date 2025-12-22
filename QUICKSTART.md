@@ -172,6 +172,36 @@ print(f"Total Fees:          {result.metrics['total']['total_fees']:.4f}")
 print("="*80)
 ```
 
+## Publish Alphas (optional)
+
+- Distributed cache: each alpha/version saved under its own signature directory
+- Publish step: consolidate multiple alphas into `{common_alphas_dir}/{symbol}/{date}.parquet`
+
+```python
+from alphadev.data import DataManager, CommonAlphasLoader
+from datetime import date
+
+manager = DataManager()
+
+# Publish selected alphas
+published = manager.publish_alphas(
+    alpha_names=['SimpleMomentum'],
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 1, 31),
+    symbols=['BTCUSDT', 'ETHUSDT']
+)
+
+# Fast loading after publish
+loader = CommonAlphasLoader()
+alphas = loader.load_date_range(
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 1, 31),
+    symbols=['BTCUSDT', 'ETHUSDT']
+)
+```
+
+Metadata note: DataManager writes human-readable `metadata.json` (params, notes, date range, symbols) next to cached data; `Feature.get_name()` now includes params and `get_note()` lets you store human notes.
+
 ## Understanding the Results
 
 ### Key Metrics

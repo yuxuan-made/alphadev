@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from ..data.loaders.alpha_loader import AlphaRankLoader
+from ..data.loaders.alpha_loader import AlphaLoader
 
 
 def compute_cross_sectional_rank_correlation(
@@ -51,7 +51,7 @@ def compute_cross_sectional_rank_correlation(
     alpha_names = (
         [target_alpha] + compare_list if compare_list is not None else None
     )
-    loader = AlphaRankLoader(alpha_names=alpha_names, alpha_base_path=alpha_base_path)
+    loader = AlphaLoader.from_names(alpha_names=alpha_names, alpha_base_path=alpha_base_path)
     
     per_timestamp_records: list[dict[str, float]] = []
     per_timestamp_index: list[pd.Timestamp] = []

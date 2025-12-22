@@ -1,7 +1,8 @@
 """Loaders package for data access."""
 
 from .base import DataLoader
-from .alpha_loader import AlphaRankLoader, DEFAULT_ALPHA_DIR
+from .alpha_loader import AlphaLoader, AlphaRankLoader, DEFAULT_ALPHA_DIR
+from .common_alphas_loader import CommonAlphasLoader, DEFAULT_COMMON_ALPHAS_DIR
 from .feature_loader import FeatureLoader
 from .csv_loader import CSVDataLoader
 from .composite import CompositeDataLoader
@@ -10,8 +11,11 @@ from .agg_trade import AggTradeDataLoader
 
 __all__ = [
     "DataLoader",
-    "AlphaRankLoader",
+    "AlphaLoader",
+    "AlphaRankLoader",  # For backward compatibility
     "DEFAULT_ALPHA_DIR",
+    "CommonAlphasLoader",
+    "DEFAULT_COMMON_ALPHAS_DIR",
     "FeatureLoader",
     "CSVDataLoader",
     "CompositeDataLoader",

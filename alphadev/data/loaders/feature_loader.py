@@ -14,13 +14,18 @@ from .base import DataLoader
 
 
 class FeatureLoader(DataLoader):
-    """Loader for pre-computed features saved by Feature.save().
+    """Loader for pre-computed features saved by DataManager.
     
-    This loader reads features from the directory structure created by Feature.save():
-    {feature_dir}/{feature_name}/{params}/{symbol}/{YYYY-MM-DD}.parquet.gz
+    This loader reads features from the directory structure created by DataManager:
+    {feature_dir}/{feature_name}/{signature}/{symbol}/{YYYY-MM-DD}.parquet[.gz]
     
-    The Feature instance should be passed as a member to ensure consistency
-    in naming, parameters, and directory structure.
+    The Feature instance should be passed to ensure consistency
+    in naming, signature calculation, and directory structure.
+    
+    Storage Format:
+    - Path: {feature_dir}/{feature_name}/{signature}/{symbol}/{YYYYMMDD}.parquet
+    - Compression: Parquet with zstd (auto-detects .parquet or .parquet.gz)
+    - Organization: One file per symbol per date
     """
     
     def __init__(
@@ -33,7 +38,9 @@ class FeatureLoader(DataLoader):
         
         self.feature = feature
         self.feature_dir = feature_dir
-        self._save_dir = feature.get_save_dir(feature_dir)
+        # Build save directory path using feature name and signature
+        signature = feature.get_signature()
+        self._save_dir = (feature_dir or Path.home() / ".alphadev" / "features") / feature.get_name() / signature
     
     def get_columns(self) -> List[str]:
         return self.feature.get_columns()
@@ -47,12 +54,22 @@ class FeatureLoader(DataLoader):
         end_date: date,
         symbols: List[str],
     ) -> pd.DataFrame:
+        """Load feature data from cache for date range and symbols.
+        
+        Args:
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+            symbols: List of symbols to load
+        
+        Returns:
+            DataFrame with MultiIndex (timestamp, symbol)
+        """
         all_data = []
         symbol_data = {symbol: [] for symbol in symbols}
         
         for symbol in symbols:
             symbol_dir = self._save_dir / symbol
-            # 只要目录存在就开始尝试读取
+            # Skip if this symbol's directory doesn't exist
             if not symbol_dir.exists():
                 continue
 
@@ -60,25 +77,28 @@ class FeatureLoader(DataLoader):
             while current_date <= end_date:
                 date_str = current_date.strftime("%Y-%m-%d")
                 
-                # 构造一个优先尝试的路径 (比如 .parquet)，如果不存 read_parquet_gz 会自动找 .parquet.gz
-                # 我们这里默认传不带 .gz 的，利用 read_parquet_gz 的容错
-                # read_parquet_gz 有容错，会处理 .parquet 或 .parquet.gz 的查找
+                # Try .parquet path first; read_parquet_gz will auto-detect .parquet.gz
                 file_path = symbol_dir / f"{date_str}.parquet"
                 
                 try:
-                    # read_parquet_gz 会处理 .parquet 或 .parquet.gz 的查找
                     df = read_parquet_gz(file_path)
-                    df['symbol'] = symbol
-                    df = df.set_index('symbol', append=True)
+                    
+                    # Add symbol to index if not already present
+                    if 'symbol' not in df.index.names:
+                        df['symbol'] = symbol
+                        df = df.set_index('symbol', append=True)
+                    
                     symbol_data[symbol].append(df)
+                    
                 except FileNotFoundError:
-                    # 这一天的数据不存在，跳过
+                    # Missing data for this date, skip to next
                     pass
                 except Exception as exc:
                     print(f"Warning: Failed to load {file_path}: {exc}")
                 
                 current_date += timedelta(days=1)
         
+        # Combine all data
         for symbol in symbols:
             if symbol_data[symbol]:
                 all_data.append(pd.concat(symbol_data[symbol], axis=0))
@@ -89,10 +109,14 @@ class FeatureLoader(DataLoader):
             )
         
         result = pd.concat(all_data, axis=0)
+        
+        # Ensure correct index level order
         if result.index.names != ['timestamp', 'symbol']:
             result = result.reorder_levels(['timestamp', 'symbol'])
+        
         result = result.sort_index()
         
+        # Reindex to include all timestamps and symbols (fills NaN for missing combinations)
         all_timestamps = result.index.get_level_values('timestamp').unique()
         full_index = pd.MultiIndex.from_product(
             [all_timestamps, symbols],

@@ -115,7 +115,23 @@ class Feature(ABC):
         Default implementation uses class name.
         Override for custom naming.
         """
-        return self.__class__.__name__
+        # 1. Base Name is the class name
+        name = self.__class__.__name__
+        # 2. If params exist, append sorted param key-values
+        if hasattr(self, 'params') and self.params:
+            param_str = "_".join([f"{k}{v}" for k, v in sorted(self.params.items())])
+            return f"{name}_{param_str}"
+        return name
+    
+    def get_note(self) -> Optional[str]:
+        """Optional human-readable note about this feature.
+        
+        Can be used for documentation or metadata.
+        
+        Returns:
+            String note or None if not provided.
+        """
+        return None
     
     def get_signature(self) -> str:
         """Generate a stable signature (hash) for this feature configuration.

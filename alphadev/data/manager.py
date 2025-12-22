@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 import pandas as pd
+import json
 from tqdm import tqdm
 
 from .savers import FeatureSaver, AlphaRankSaver
 from ..alpha.features import Feature, DEFAULT_FEATURE_DIR
 from .loaders.alpha_loader import DEFAULT_ALPHA_DIR
+from .publisher import AlphaPublisher, DEFAULT_COMMON_ALPHAS_DIR
 
 if TYPE_CHECKING:
     from ..alpha.alpha import Alpha
@@ -64,15 +66,20 @@ class DataManager:
         self,
         feature_dir: Optional[Path] = None,
         alpha_dir: Optional[Path] = None,
+        common_alphas_dir: Optional[Path] = None,
     ):
         """Initialize DataManager.
         
         Args:
             feature_dir: Base directory for feature storage
-            alpha_dir: Base directory for alpha storage
+            alpha_dir: Base directory for alpha storage (with signatures)
+            common_alphas_dir: Base directory for published alphas
         """
         self.feature_dir = feature_dir or DEFAULT_FEATURE_DIR
         self.alpha_dir = alpha_dir or DEFAULT_ALPHA_DIR
+        self.common_alphas_dir = common_alphas_dir or DEFAULT_COMMON_ALPHAS_DIR
+        self.publisher = AlphaPublisher(alpha_dir=self.alpha_dir, 
+                                       common_alphas_dir=self.common_alphas_dir)
     
     def get_feature(
         self,
@@ -211,6 +218,22 @@ class DataManager:
         saver = FeatureSaver()
         saver.save(feature_data, cache_dir)
         
+        # Save metadata about the feature computation
+        metadata = {
+            "feature_name": feature.get_name(),
+            "feature_note": feature.get_note(),
+            "params": feature.params,
+            "created_at": pd.Timestamp.now().isoformat(),
+            "compute_range": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "symbols": symbols,
+            },
+        }
+        metadata_path = cache_dir / "metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f)
+
         return feature_data
     
     def get_alpha(
@@ -304,6 +327,51 @@ class DataManager:
         saver.save(alpha.get_name(), alpha_data, cache_dir)
         
         return alpha_data
+    
+    def publish_alphas(
+        self,
+        alpha_names: list[str],
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+        output_format: str = "auto",
+    ) -> dict:
+        """Publish (consolidate) computed alphas for production use.
+        
+        This implements the publish step in the distributed alpha workflow:
+        1. Reads alphas from their individual cached directories (with signatures)
+        2. Merges them into unified daily files
+        3. Stores in CommonAlphas directory for backtesting and live trading
+        
+        Args:
+            alpha_names: List of alpha names to publish
+            start_date: Start date for consolidation
+            end_date: End date for consolidation
+            symbols: List of symbols to process
+            output_format: 'auto', 'zstd', or 'gz'
+        
+        Returns:
+            Dictionary mapping (symbol, date) to published file paths
+            
+        Example:
+            >>> manager = DataManager()
+            >>> published = manager.publish_alphas(
+            ...     alpha_names=['MomentumAlpha', 'MeanRevAlpha'],
+            ...     start_date=date(2024, 1, 1),
+            ...     end_date=date(2024, 1, 31),
+            ...     symbols=['BTCUSDT', 'ETHUSDT']
+            ... )
+        """
+        print(f"Publishing {len(alpha_names)} alphas from {start_date} to {end_date}...")
+        published_files = self.publisher.publish_alphas(
+            alpha_names=alpha_names,
+            start_date=start_date,
+            end_date=end_date,
+            symbols=symbols,
+            output_format=output_format,
+        )
+        print(f"Published {len(published_files)} date-symbol combinations")
+        return published_files
     
     def _filter_data(
         self,

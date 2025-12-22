@@ -2,48 +2,126 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, Union, List
 
 import pandas as pd
 
 from ..fetch_data import read_parquet_gz
 from .base import DataLoader
 
+if TYPE_CHECKING:
+    from ...alpha.alpha import Alpha
+
 # Default directory for saved alpha ranks
 DEFAULT_ALPHA_DIR = Path("/var/lib/MarketData/Binance/alphas")
 
 
-class AlphaRankLoader(DataLoader):
-    """DataLoader for loading saved alpha ranks.
+class AlphaLoader(DataLoader):
+    """Loader for pre-computed alpha ranks saved by DataManager.
     
-    Loads parquet files produced by Alpha.save():
-    {feature_dir}/alphas/{symbol}/{YYYY-MM-DD}.parquet[.gz]
+    Supports two initialization modes:
     
-    Supports both .parquet and .parquet.gz formats (auto-detected).
+    1. **DataManager mode** (recommended): Pass an Alpha instance
+       ```python
+       loader = AlphaLoader(alpha=my_alpha_instance)
+       ```
+       Uses path: {alpha_dir}/{alpha_name}/{signature}/{symbol}/{YYYY-MM-DD}.parquet
+    
+    2. **Legacy mode**: Pass alpha_names and base_path
+       ```python
+       loader = AlphaLoader.from_names(
+           alpha_names=['alpha1', 'alpha2'],
+           alpha_base_path='/path/to/alphas'
+       )
+       ```
+       Uses path: {alpha_base_path}/{symbol}/{YYYY-MM-DD}.parquet
+    
+    Storage Format:
+    - Modern: {alpha_dir}/{alpha_name}/{signature}/{symbol}/{YYYYMMDD}.parquet
+    - Legacy: {alpha_base_path}/{symbol}/{YYYYMMDD}.parquet
+    - Compression: Parquet with zstd (auto-detects .parquet or .parquet.gz)
     """
     
     def __init__(
         self,
-        alpha_names: Optional[list[str]] = None,
+        alpha: Optional[Alpha] = None,
+        alpha_dir: Optional[Path] = None,
+        # Legacy parameters for backward compatibility
+        alpha_names: Optional[List[str]] = None,
         alpha_base_path: Optional[Path] = None,
     ):
-        if alpha_base_path is None:
-            alpha_base_path = DEFAULT_ALPHA_DIR
+        """Initialize AlphaLoader.
         
-        self.alpha_names = alpha_names
-        self.alpha_base_path = alpha_base_path
+        Args:
+            alpha: Alpha instance (modern mode)
+            alpha_dir: Base directory for alpha storage (modern mode)
+            alpha_names: List of alpha names (legacy mode for backward compatibility)
+            alpha_base_path: Base path for alphas (legacy mode for backward compatibility)
+        """
+        # Handle both modern and legacy initialization
+        if alpha is not None:
+            # Modern mode: Alpha instance provided
+            from ...alpha.alpha import Alpha as AlphaBase
+            if not isinstance(alpha, AlphaBase):
+                raise TypeError(f"alpha must be an Alpha instance, got {type(alpha)}")
+            
+            self.alpha = alpha
+            self.alpha_dir = alpha_dir or DEFAULT_ALPHA_DIR
+            self._is_legacy = False
+            
+            # Build save directory path using alpha name and signature
+            signature = alpha.get_signature()
+            self._save_dir = self.alpha_dir / alpha.get_name() / signature
+            self._alpha_names = None
+            
+        else:
+            # Legacy mode: Names and path provided
+            self._is_legacy = True
+            self.alpha = None
+            self.alpha_dir = alpha_base_path or DEFAULT_ALPHA_DIR
+            self._alpha_names = alpha_names
+            self._save_dir = self.alpha_dir  # Legacy: directly use base path
+    
+    @classmethod
+    def from_names(
+        cls,
+        alpha_names: Optional[List[str]] = None,
+        alpha_base_path: Optional[Path] = None,
+    ) -> AlphaLoader:
+        """Create AlphaLoader in legacy mode (backward compatibility).
+        
+        Args:
+            alpha_names: Optional list of alpha column names to filter
+            alpha_base_path: Base directory for alpha storage
+        
+        Returns:
+            AlphaLoader instance in legacy mode
+        """
+        return cls(
+            alpha=None,
+            alpha_names=alpha_names,
+            alpha_base_path=alpha_base_path,
+        )
     
     def get_columns(self) -> list[str]:
-        if self.alpha_names is not None:
-            return self.alpha_names
+        """Return column names produced by this alpha."""
+        if self._is_legacy:
+            return self._alpha_names or []
+        if self.alpha is not None:
+            return self.alpha.get_columns()
         return []
     
     def get_name(self) -> str:
-        if self.alpha_names:
-            return f"AlphaRankLoader({', '.join(self.alpha_names)})"
-        return "AlphaRankLoader(all)"
+        """Return a readable name for this loader."""
+        if self._is_legacy:
+            if self._alpha_names:
+                return f"AlphaLoader({', '.join(self._alpha_names)})"
+            return "AlphaLoader(all)"
+        if self.alpha is not None:
+            return f"AlphaLoader({self.alpha.get_name()})"
+        return "AlphaLoader()"
     
     def load_date_range(
         self,
@@ -51,13 +129,35 @@ class AlphaRankLoader(DataLoader):
         end_date: date,
         symbols: list[str],
     ) -> pd.DataFrame:
+        """Load alpha data from cache for date range and symbols.
+        
+        Args:
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+            symbols: List of symbols to load
+        
+        Returns:
+            DataFrame with MultiIndex (timestamp, symbol)
+        """
+        if self._is_legacy:
+            return self._load_date_range_legacy(start_date, end_date, symbols)
+        else:
+            return self._load_date_range_modern(start_date, end_date, symbols)
+    
+    def _load_date_range_modern(
+        self,
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+    ) -> pd.DataFrame:
+        """Load alpha data in modern mode (with signature-based directories)."""
         all_data = []
         symbol_data: dict[str, list[pd.DataFrame]] = {symbol: [] for symbol in symbols}
         
         for symbol in symbols:
-            symbol_dir = self.alpha_base_path / symbol
+            symbol_dir = self._save_dir / symbol
             
-            # 如果连这个品种的目录都没有，直接跳过该品种
+            # Skip if this symbol's directory doesn't exist
             if not symbol_dir.exists():
                 continue
             
@@ -65,72 +165,157 @@ class AlphaRankLoader(DataLoader):
             while current_date <= end_date:
                 date_str = current_date.strftime("%Y-%m-%d")
                 
-                # 【修改点】：
-                # 这里我们默认构造 .parquet 路径。
-                # read_parquet_gz 内部会自动检查：
-                # 1. 存在 xxx.parquet? -> 读它
-                # 2. 不存在? 尝试找 xxx.parquet.gz -> 读它
-                # 3. 都不存在? -> 抛出 FileNotFoundError
+                # Try .parquet path first; read_parquet_gz will auto-detect .parquet.gz
                 file_path = symbol_dir / f"{date_str}.parquet"
                 
                 try:
                     df = read_parquet_gz(file_path)
                     
-                    # 兼容性处理：把旧的整数 Rank 转为 float，防止后续计算报错
+                    # Type compatibility: convert integer columns to float
                     df = df.apply(
                         lambda col: col.astype(float) if pd.api.types.is_integer_dtype(col) else col
                     )
                     
-                    # 筛选需要的列
-                    if self.alpha_names is not None:
-                        available = [col for col in self.alpha_names if col in df.columns]
-                        if available:
-                            df = df[available]
-                        else:
-                            # 如果这一天的数据里没有我们要的 alpha 列，也跳过
-                            raise ValueError(f"Columns {self.alpha_names} not found")
-                    
-                    df["symbol"] = symbol
-                    df = df.set_index("symbol", append=True)
+                    # Add symbol to index if not already present
+                    if 'symbol' not in df.index.names:
+                        df['symbol'] = symbol
+                        df = df.set_index('symbol', append=True)
                     
                     symbol_data[symbol].append(df)
-
+                    
                 except FileNotFoundError:
-                    # 这一天的数据缺失，我们直接忽略，继续循环处理下一天 (current_date += 1)
+                    # Missing data for this date, skip to next
                     pass
                 except Exception as exc:
-                    # 其他错误（如文件损坏）打印警告但不中断整个回测
                     print(f"Warning: Failed to load {file_path}: {exc}")
                 
-                current_date = current_date + pd.Timedelta(days=1)
+                current_date += timedelta(days=1)
         
+        # Combine all data
         for symbol in symbols:
             if symbol_data[symbol]:
                 all_data.append(pd.concat(symbol_data[symbol], axis=0))
         
-        if all_data:
-            combined = pd.concat(all_data, axis=0)
-        else:
-            combined = pd.DataFrame(
-                index=pd.MultiIndex.from_tuples([], names=["timestamp", "symbol"])
+        if not all_data:
+            return pd.DataFrame(
+                index=pd.MultiIndex.from_tuples([], names=['timestamp', 'symbol'])
             )
         
-        if combined.index.names != ["timestamp", "symbol"]:
-            combined.index.names = ["timestamp", "symbol"]
+        result = pd.concat(all_data, axis=0)
         
-        combined = combined.sort_index()
+        # Ensure correct index level order
+        if result.index.names != ['timestamp', 'symbol']:
+            result = result.reorder_levels(['timestamp', 'symbol'])
         
-        timestamps = combined.index.get_level_values("timestamp").unique()
+        result = result.sort_index()
+        
+        # Reindex to include all timestamps and symbols (fills NaN for missing combinations)
+        all_timestamps = result.index.get_level_values('timestamp').unique()
         full_index = pd.MultiIndex.from_product(
-            [timestamps, symbols],
-            names=["timestamp", "symbol"],
+            [all_timestamps, symbols],
+            names=['timestamp', 'symbol']
         )
-        combined = combined.reindex(full_index)
         
-        if self.alpha_names is not None:
-            combined = combined.reindex(columns=self.alpha_names)
+        result = result.reindex(full_index)
         
-        return combined
+        # Filter to specified columns if alpha defines them
+        columns = self.get_columns()
+        if columns:
+            result = result.reindex(columns=columns)
+        
+        return result
+    
+    def _load_date_range_legacy(
+        self,
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+    ) -> pd.DataFrame:
+        """Load alpha data in legacy mode (simple symbol/{date} structure)."""
+        all_data = []
+        symbol_data: dict[str, list[pd.DataFrame]] = {symbol: [] for symbol in symbols}
+        
+        for symbol in symbols:
+            # In legacy mode, paths are alpha_dir/{symbol}/{date}.parquet
+            symbol_dir = self._save_dir / symbol
+            
+            if not symbol_dir.exists():
+                continue
+            
+            current_date = start_date
+            while current_date <= end_date:
+                date_str = current_date.strftime("%Y-%m-%d")
+                file_path = symbol_dir / f"{date_str}.parquet"
+                
+                try:
+                    df = read_parquet_gz(file_path)
+                    
+                    # Type compatibility: convert integer columns to float
+                    df = df.apply(
+                        lambda col: col.astype(float) if pd.api.types.is_integer_dtype(col) else col
+                    )
+                    
+                    # Filter to specified columns if provided
+                    if self._alpha_names is not None:
+                        available = [col for col in self._alpha_names if col in df.columns]
+                        if available:
+                            df = df[available]
+                        else:
+                            # Skip if none of the requested columns exist
+                            current_date += timedelta(days=1)
+                            continue
+                    
+                    # Add symbol to index if not already present
+                    if 'symbol' not in df.index.names:
+                        df['symbol'] = symbol
+                        df = df.set_index('symbol', append=True)
+                    
+                    symbol_data[symbol].append(df)
+                    
+                except FileNotFoundError:
+                    # Missing data for this date, skip to next
+                    pass
+                except Exception as exc:
+                    print(f"Warning: Failed to load {file_path}: {exc}")
+                
+                current_date += timedelta(days=1)
+        
+        # Combine all data
+        for symbol in symbols:
+            if symbol_data[symbol]:
+                all_data.append(pd.concat(symbol_data[symbol], axis=0))
+        
+        if not all_data:
+            return pd.DataFrame(
+                index=pd.MultiIndex.from_tuples([], names=['timestamp', 'symbol'])
+            )
+        
+        result = pd.concat(all_data, axis=0)
+        
+        # Ensure correct index level order
+        if result.index.names != ['timestamp', 'symbol']:
+            result = result.reindex(full_index)
+        
+        result = result.sort_index()
+        
+        # Reindex to include all timestamps and symbols
+        all_timestamps = result.index.get_level_values('timestamp').unique()
+        full_index = pd.MultiIndex.from_product(
+            [all_timestamps, symbols],
+            names=['timestamp', 'symbol']
+        )
+        
+        result = result.reindex(full_index)
+        
+        # Filter to specified columns if provided
+        if self._alpha_names is not None:
+            result = result.reindex(columns=self._alpha_names)
+        
+        return result
 
 
-__all__ = ["AlphaRankLoader", "DEFAULT_ALPHA_DIR"]
+# Legacy class name for backward compatibility
+AlphaRankLoader = AlphaLoader
+
+
+__all__ = ["AlphaLoader", "AlphaRankLoader", "DEFAULT_ALPHA_DIR"]

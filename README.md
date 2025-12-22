@@ -20,6 +20,7 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 
 - **Dual Execution Modes**: Batch (in-memory) and streaming (chunked) backtesting
 - **Feature Management**: Preprocess and cache market data features with automatic "get or compute" pattern
+- **Metadata-Rich Caching**: DataManager writes human-readable `metadata.json` alongside cached data (params, notes, ranges)
 - **Flexible Data Loading**: Support for CSV, Parquet, Kline data, and custom loaders
 - **Alpha Framework**: Base class system for implementing trading strategies
 - **Portfolio Construction**: Rank-based long/short with buffer mechanism and beta neutrality
@@ -28,6 +29,7 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 - **Storage Optimization**: Efficient compression with Parquet (ZSTD/Snappy+GZIP)
 - **Lazy Loading**: Save sequences to disk, load metrics only for memory efficiency
 - **Comprehensive Metrics**: Sharpe ratio, IC, turnover, leg-specific performance, and more
+- **Alpha Publish Pipeline**: Distributed per-alpha caches plus optional consolidation via AlphaPublisher → CommonAlphasLoader for fast reads
 
 ## Installation
 
@@ -101,13 +103,18 @@ class MyFeature(Feature):
         """Reset any state."""
         pass
     
-    def get_name(self):
-        return "MyFeature"
-    
     def get_columns(self):
         """Specify what columns this feature produces."""
         return ['my_feature']
+
+    def get_note(self):
+      """Optional human note that will be stored in metadata.json."""
+      return "Demo feature for quick start"
 ```
+
+Notes:
+- `Feature.get_name()` now includes params by default, so different configurations get distinct cache signatures.
+- `Feature.get_note()` lets you attach human-readable notes that are written into `metadata.json` alongside cached data.
 
 ### 2. Use DataManager for Get or Compute Pattern
 
@@ -133,6 +140,7 @@ feature_data = manager.get_feature(
 )
 # First call: computes and caches
 # Second call: loads from cache (fast!)
+# Metadata: DataManager writes `metadata.json` (params, notes, date range, symbols) next to cached data for transparency
 ```
 
 ### 3. Define Alpha (Pure Signal Generation)
@@ -174,6 +182,28 @@ alpha_data = manager.get_alpha(
     start_date=date(2024, 1, 1),
     end_date=date(2024, 1, 31),
     symbols=['BTCUSDT', 'ETHUSDT']
+)
+```
+
+### 4b. Publish alphas for production (optional)
+
+```python
+from alphadev.data import CommonAlphasLoader
+
+# Consolidate distributed alpha caches into a common directory
+published = manager.publish_alphas(
+  alpha_names=['MyAlpha'],
+  start_date=date(2024, 1, 1),
+  end_date=date(2024, 1, 31),
+  symbols=['BTCUSDT', 'ETHUSDT']
+)
+
+# Fast loading for backtests or live use
+loader = CommonAlphasLoader()
+common_alphas = loader.load_date_range(
+  start_date=date(2024, 1, 1),
+  end_date=date(2024, 1, 31),
+  symbols=['BTCUSDT', 'ETHUSDT']
 )
 ```
 

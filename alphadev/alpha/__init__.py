@@ -3,11 +3,11 @@
 from .features import Feature
 from .operators import Operator
 from .alpha import Alpha
-from ..data.loaders.alpha_loader import AlphaRankLoader
+from ..data.loaders.alpha_loader import AlphaLoader
 
 __all__ = [
     "Alpha",
-    "AlphaRankLoader",
+    "AlphaLoader",
     "Feature",
     "Operator",
 ]

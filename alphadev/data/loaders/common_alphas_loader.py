@@ -19,7 +19,7 @@ from ..fetch_data import read_parquet_gz
 from .base import DataLoader
 
 # Default directory for published alphas
-DEFAULT_COMMON_ALPHAS_DIR = Path("/var/lib/MarketData/Binance/common_alphas")
+DEFAULT_COMMON_ALPHAS_DIR = Path("G:/crypto/Alphas/common_alphas")
 
 
 class CommonAlphasLoader(DataLoader):

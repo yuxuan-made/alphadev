@@ -711,7 +711,7 @@ Features managed by DataManager use stable signatures:
 
 Example:
 ```
-/var/lib/MarketData/features/
+G:/crypto/Features/
 ├── RollingMean/
 │   ├── 11d226678c884068/    # signature for window=20
 │   │   ├── BTCUSDT/
@@ -1080,7 +1080,7 @@ Where:
 
 Example:
 ```
-/var/lib/MarketData/Binance/features/
+G:/crypto/Features/
   ├── RollingMean/
   │   ├── 11d226678c884068/    # signature for window=20
   │   │   ├── BTCUSDT/

@@ -16,7 +16,7 @@ import pandas as pd
 import statsmodels.api as sm
 from .fetch_data import read_parquet_gz
 
-BASE_DIR = Path("/var/lib/MarketData/Binance/data/futures/um/daily/klines")
+BASE_DIR = Path("G:/crypto/BinanceData/klines")
 REFERENCE_SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
 

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from ...alpha.alpha import Alpha
 
 # Default directory for saved alpha ranks
-DEFAULT_ALPHA_DIR = Path("/var/lib/MarketData/Binance/alphas")
+DEFAULT_ALPHA_DIR = Path("G:/crypto/Alphas")
 
 
 class AlphaLoader(DataLoader):

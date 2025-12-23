@@ -21,7 +21,7 @@ import pandas as pd
 from .fetch_data import read_parquet_gz, save_df_to_parquet
 
 # Default directory for published alphas (production-ready)
-DEFAULT_COMMON_ALPHAS_DIR = Path("/var/lib/MarketData/Binance/common_alphas")
+DEFAULT_COMMON_ALPHAS_DIR = Path("G:/crypto/Alphas/common_alphas")
 
 
 class AlphaPublisher:
@@ -56,7 +56,7 @@ class AlphaPublisher:
             alpha_dir: Base directory containing cached alphas with signatures
             common_alphas_dir: Output directory for published alphas
         """
-        self.alpha_dir = alpha_dir or Path("/var/lib/MarketData/Binance/alphas")
+        self.alpha_dir = alpha_dir or Path("G:/crypto/Alphas")
         self.common_alphas_dir = common_alphas_dir or DEFAULT_COMMON_ALPHAS_DIR
     
     def publish_alphas(

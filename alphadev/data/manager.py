@@ -87,7 +87,7 @@ class DataManager:
         raw_data: pd.DataFrame,
         start_date: date,
         end_date: date,
-        symbols: list[str],
+        symbols: Optional[list[str]],
         force_compute: bool = False,
     ) -> pd.DataFrame:
         """Get feature data using Get or Compute pattern.
@@ -97,12 +97,13 @@ class DataManager:
             raw_data: Raw market data for computation (if needed)
             start_date: Start date for data range
             end_date: End date for data range
-            symbols: List of symbols to process
+            symbols: List of symbols to process. If None, use all symbols present in raw_data.
             force_compute: If True, skip cache and recompute
         
         Returns:
             DataFrame with feature data (MultiIndex: timestamp, symbol)
         """
+        symbols_list = self._resolve_symbols(raw_data, symbols)
         signature = feature.get_signature()
         cache_dir = self.feature_dir / feature.get_name() / signature
         
@@ -110,7 +111,22 @@ class DataManager:
         if not force_compute and cache_dir.exists():
             try:
                 cached_data = self._load_feature_from_cache(
-                    cache_dir, start_date, end_date, symbols
+                    cache_dir, start_date, end_date, symbols_list
+                )
+                missing = self._find_missing_symbol_dates(cache_dir, start_date, end_date, symbols_list)
+                if not missing:
+                    return cached_data
+
+                # Cache exists but is incomplete for the requested window -> compute window and backfill missing days.
+                print(
+                    f"Cache incomplete for feature {feature.get_name()} (missing {len(missing)} symbol-days). Backfilling..."
+                )
+                computed = self._compute_feature(feature, raw_data, start_date, end_date, symbols_list)
+                self._save_missing_feature_days(computed, cache_dir, missing)
+
+                # Reload full requested slice.
+                cached_data = self._load_feature_from_cache(
+                    cache_dir, start_date, end_date, symbols_list
                 )
                 if not cached_data.empty:
                     return cached_data
@@ -121,9 +137,9 @@ class DataManager:
         # Cache miss or forced recompute - compute fresh data
         print(f"Computing feature {feature.get_name()} (signature: {signature})")
         feature_data = self._compute_and_save_feature(
-            feature, raw_data, start_date, end_date, symbols, cache_dir
+            feature, raw_data, start_date, end_date, symbols_list, cache_dir
         )
-        
+
         return feature_data
     
     def _load_feature_from_cache(
@@ -206,12 +222,7 @@ class DataManager:
         Returns:
             DataFrame with computed feature data
         """
-        # Filter raw data to date range and symbols
-        filtered_data = self._filter_data(raw_data, start_date, end_date, symbols)
-        
-        # Compute feature
-        feature.reset()
-        feature_data = feature.compute(filtered_data)
+        feature_data = self._compute_feature(feature, raw_data, start_date, end_date, symbols)
         
         # Save to cache
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +246,19 @@ class DataManager:
             json.dump(metadata, f)
 
         return feature_data
+
+    def _compute_feature(
+        self,
+        feature: Feature,
+        raw_data: pd.DataFrame,
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+    ) -> pd.DataFrame:
+        """Compute feature for the requested window only (no saving)."""
+        filtered_data = self._filter_data(raw_data, start_date, end_date, symbols)
+        feature.reset()
+        return feature.compute(filtered_data)
     
     def get_alpha(
         self,
@@ -242,7 +266,7 @@ class DataManager:
         feature_data: pd.DataFrame,
         start_date: date,
         end_date: date,
-        symbols: list[str],
+        symbols: Optional[list[str]],
         force_compute: bool = False,
     ) -> pd.DataFrame:
         """Get alpha data using Get or Compute pattern.
@@ -252,12 +276,13 @@ class DataManager:
             feature_data: Feature data for computation (if needed)
             start_date: Start date for data range
             end_date: End date for data range
-            symbols: List of symbols to process
+            symbols: List of symbols to process. If None, use all symbols present in feature_data.
             force_compute: If True, skip cache and recompute
         
         Returns:
             DataFrame with alpha data (MultiIndex: timestamp, symbol)
         """
+        symbols_list = self._resolve_symbols(feature_data, symbols)
         signature = alpha.get_signature()
         cache_dir = self.alpha_dir / alpha.get_name() / signature
         
@@ -265,7 +290,20 @@ class DataManager:
         if not force_compute and cache_dir.exists():
             try:
                 cached_data = self._load_alpha_from_cache(
-                    cache_dir, start_date, end_date, symbols
+                    cache_dir, start_date, end_date, symbols_list
+                )
+                missing = self._find_missing_symbol_dates(cache_dir, start_date, end_date, symbols_list)
+                if not missing:
+                    return cached_data
+
+                print(
+                    f"Cache incomplete for alpha {alpha.get_name()} (missing {len(missing)} symbol-days). Backfilling..."
+                )
+                computed = self._compute_alpha(alpha, feature_data, start_date, end_date, symbols_list)
+                self._save_missing_alpha_days(alpha.get_name(), computed, cache_dir, missing)
+
+                cached_data = self._load_alpha_from_cache(
+                    cache_dir, start_date, end_date, symbols_list
                 )
                 if not cached_data.empty:
                     return cached_data
@@ -276,9 +314,9 @@ class DataManager:
         # Cache miss or forced recompute - compute fresh data
         print(f"Computing alpha {alpha.get_name()} (signature: {signature})")
         alpha_data = self._compute_and_save_alpha(
-            alpha, feature_data, start_date, end_date, symbols, cache_dir
+            alpha, feature_data, start_date, end_date, symbols_list, cache_dir
         )
-        
+
         return alpha_data
     
     def _load_alpha_from_cache(
@@ -314,12 +352,7 @@ class DataManager:
         Returns:
             DataFrame with computed alpha data
         """
-        # Filter feature data to date range and symbols
-        filtered_data = self._filter_data(feature_data, start_date, end_date, symbols)
-        
-        # Compute alpha
-        alpha.reset()
-        alpha_data = alpha.compute(filtered_data)
+        alpha_data = self._compute_alpha(alpha, feature_data, start_date, end_date, symbols)
         
         # Save to cache
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -327,6 +360,23 @@ class DataManager:
         saver.save(alpha.get_name(), alpha_data, cache_dir)
         
         return alpha_data
+
+    def _compute_alpha(
+        self,
+        alpha: "Alpha",
+        feature_data: pd.DataFrame,
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+    ) -> pd.DataFrame:
+        """Compute alpha for the requested window only (no saving).
+
+        NOTE: caller is responsible for providing feature_data that already includes
+        any lookback/history required by the alpha implementation.
+        """
+        filtered_data = self._filter_data(feature_data, start_date, end_date, symbols)
+        alpha.reset()
+        return alpha.compute(filtered_data)
     
     def publish_alphas(
         self,
@@ -408,6 +458,87 @@ class DataManager:
         combined_mask = date_mask & symbol_mask
         
         return data[combined_mask]
+
+    @staticmethod
+    def _resolve_symbols(data: pd.DataFrame, symbols: Optional[list[str]]) -> list[str]:
+        """Resolve symbols list.
+
+        - If symbols is provided: use it.
+        - If symbols is None: infer from MultiIndex level 'symbol'.
+        """
+        if symbols is not None:
+            return list(symbols)
+        if data.empty:
+            return []
+        if not isinstance(data.index, pd.MultiIndex) or 'symbol' not in data.index.names:
+            raise ValueError("Cannot infer symbols: data must have MultiIndex with 'symbol' level")
+        return sorted(set(data.index.get_level_values('symbol')))
+
+    @staticmethod
+    def _list_dates(start_date: date, end_date: date) -> list[date]:
+        dates: list[date] = []
+        current = start_date
+        while current <= end_date:
+            dates.append(current)
+            current += timedelta(days=1)
+        return dates
+
+    @staticmethod
+    def _has_daily_file(symbol_dir: Path, day: date) -> bool:
+        date_str = day.strftime("%Y-%m-%d")
+        return (symbol_dir / f"{date_str}.parquet").exists() or (symbol_dir / f"{date_str}.parquet.gz").exists()
+
+    def _find_missing_symbol_dates(
+        self,
+        cache_dir: Path,
+        start_date: date,
+        end_date: date,
+        symbols: list[str],
+    ) -> list[tuple[str, date]]:
+        """Return list of (symbol, date) missing from cache for the requested window."""
+        missing: list[tuple[str, date]] = []
+        days = self._list_dates(start_date, end_date)
+        for symbol in symbols:
+            symbol_dir = cache_dir / symbol
+            for day in days:
+                if not self._has_daily_file(symbol_dir, day):
+                    missing.append((symbol, day))
+        return missing
+
+    def _slice_missing_days(self, data: pd.DataFrame, missing: list[tuple[str, date]]) -> pd.DataFrame:
+        if data.empty or not missing:
+            return data.iloc[0:0]
+        if not isinstance(data.index, pd.MultiIndex):
+            raise ValueError("data must have MultiIndex (timestamp, symbol)")
+        ts = pd.to_datetime(data.index.get_level_values('timestamp'))
+        syms = data.index.get_level_values('symbol')
+        wanted = set(missing)
+        row_days = ts.normalize().date
+        mask = [(s, d) in wanted for s, d in zip(syms, row_days)]
+        return data[mask]
+
+    def _save_missing_feature_days(
+        self,
+        computed: pd.DataFrame,
+        cache_dir: Path,
+        missing: list[tuple[str, date]],
+    ) -> None:
+        partial = self._slice_missing_days(computed, missing)
+        if partial.empty:
+            return
+        FeatureSaver().save(partial, cache_dir)
+
+    def _save_missing_alpha_days(
+        self,
+        alpha_name: str,
+        computed: pd.DataFrame,
+        cache_dir: Path,
+        missing: list[tuple[str, date]],
+    ) -> None:
+        partial = self._slice_missing_days(computed, missing)
+        if partial.empty:
+            return
+        AlphaRankSaver().save(alpha_name, partial, cache_dir)
     
     def clear_cache(
         self,

@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Type, TYPE_CHECKING
 import os
 import pickle
 import ipdb
+from pathlib import Path
 
 import pandas as pd
 import gc
@@ -13,6 +14,7 @@ import gc
 if TYPE_CHECKING:
     from ..alpha import Alpha
     from ..data import DataLoader
+    from ..alpha.features import Feature
 
 
 
@@ -403,6 +405,9 @@ class BacktestConfig:
         price_loader: 'DataLoader',
         alpha_loaders: List['DataLoader'],
         beta_csv_path: str,
+        universe_loader: Optional['DataLoader'] = None,
+        universe: Optional['Feature'] = None,
+        universe_dir: Optional[Path] = None,
         # Backtest settings 
         quantile: tuple[float, float] = (0.2, 0.2),
         gross_exposure: float = 1.0,
@@ -444,6 +449,9 @@ class BacktestConfig:
         self.symbols = symbols
         self.price_loader = price_loader
         self.alpha_loaders = alpha_loaders
+        self.universe_loader = universe_loader
+        self.universe = universe
+        self.universe_dir = universe_dir
         self.beta_csv_path = beta_csv_path
         
         # Handle quantile parameter

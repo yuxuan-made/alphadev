@@ -115,13 +115,21 @@ class Feature(ABC):
         Default implementation uses class name.
         Override for custom naming.
         """
-        # 1. Base Name is the class name
         name = self.__class__.__name__
-        # 2. If params exist, append sorted param key-values
-        if hasattr(self, 'params') and self.params:
-            param_str = "_".join([f"{k}{v}" for k, v in sorted(self.params.items())])
-            return f"{name}_{param_str}"
+
         return name
+    
+    def get_detailed_name(self) -> str:
+        """Return a detailed name including parameters.
+        
+        Useful for logging and debugging. Do not use this for storage paths. Does not affect caching.
+        
+        Returns:
+            String with class name and sorted parameters.
+            E.g., "MyFeature(param1=10,param2='abc')"
+        """
+        param_str = ", ".join([f"{k}={v!r}" for k, v in sorted(self.params.items())])
+        return f"{self.__class__.__name__}({param_str})"
     
     def get_note(self) -> Optional[str]:
         """Optional human-readable note about this feature.

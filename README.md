@@ -30,6 +30,7 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 - **Lazy Loading**: Save sequences to disk, load metrics only for memory efficiency
 - **Comprehensive Metrics**: Sharpe ratio, IC, turnover, leg-specific performance, and more
 - **Alpha Publish Pipeline**: Distributed per-alpha caches plus optional consolidation via AlphaPublisher → CommonAlphasLoader for fast reads
+- **Universe Filtering (NEW)**: Compute and cache a dynamic tradable universe (e.g., prior-day turnover > 100M USDT) and mask symbols before ranking/portfolio construction
 
 ## Installation
 
@@ -140,6 +141,9 @@ feature_data = manager.get_feature(
 )
 # First call: computes and caches
 # Second call: loads from cache (fast!)
+# Tip: pass symbols=None to use all symbols present in raw_data
+# Note: if cache exists but some (symbol, date) files are missing in the requested range,
+# DataManager will backfill only the missing days (still computing only within start/end).
 # Metadata: DataManager writes `metadata.json` (params, notes, date range, symbols) next to cached data for transparency
 ```
 
@@ -183,6 +187,63 @@ alpha_data = manager.get_alpha(
     end_date=date(2024, 1, 31),
     symbols=['BTCUSDT', 'ETHUSDT']
 )
+
+# Tip: pass symbols=None to use all symbols present in feature_data
+# Note: if cache exists but some (symbol, date) files are missing in the requested range,
+# DataManager will backfill only the missing days.
+
+### 4a. Compute Universe (Static / Dynamic)
+
+Universe is implemented as a `Feature` that outputs a boolean column `in_universe`.
+You typically compute and cache it before computing alphas / running backtests.
+
+```python
+from alphadev.alpha import DynamicUniverse
+
+# Example rule: eligible on day D iff turnover on day D-1 > 100,000,000 USDT
+universe = DynamicUniverse(threshold_usdt=100_000_000)
+
+universe_mask = manager.get_feature(
+  feature=universe,
+  raw_data=market_data,  # must contain quote_volume or turnover (or close*volume)
+  start_date=date(2024, 1, 1),
+  end_date=date(2024, 1, 31),
+  symbols=['BTCUSDT', 'ETHUSDT'],
+)
+```
+
+Pipeline recommendation:
+`准备数据 -> 计算 Universe(并存盘) -> 计算 Alpha(并存盘) -> 回测`
+
+### 5. Backtest With Universe Mask
+
+You can pass either:
+- `universe_loader` (recommended): loads cached `in_universe` files
+- `universe` + `universe_dir`: convenience wrapper that internally builds a `UniverseLoader`
+
+```python
+from alphadev.data import UniverseLoader
+from alphadev.core import BacktestConfig
+from pathlib import Path
+
+feature_dir = Path('path/to/features')
+
+config = BacktestConfig(
+  name='my_strategy_with_universe',
+  alpha_class=MyAlpha,
+  alpha_kwargs={},
+  start_date=date(2024, 1, 1),
+  end_date=date(2024, 1, 31),
+  symbols=['BTCUSDT', 'ETHUSDT'],
+  price_loader=price_loader,
+  alpha_loaders=[alpha_loader],
+  universe_loader=UniverseLoader(universe=DynamicUniverse(100_000_000), feature_dir=feature_dir),
+  beta_csv_path='path/to/beta.csv',
+  frequency='1h',
+)
+```
+
+During backtest, symbols not in universe are masked out before alpha ranking and position selection.
 ```
 
 ### 4b. Publish alphas for production (optional)

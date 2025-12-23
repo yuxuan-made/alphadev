@@ -292,6 +292,12 @@ def run_batch(
     for t in range(n_times):
         price_row = price[t]
         alpha_row = alpha[t]
+
+        # Universe mask (True = eligible). Missing/None means all eligible.
+        if getattr(panel, "universe", None) is None:
+            eligible_row = np.ones(n_symbols, dtype=bool)
+        else:
+            eligible_row = panel.universe[t].astype(bool, copy=False)
         
         # Identify symbols with valid prices (primary check)
         valid_price_row = ~np.isnan(price_row)
@@ -299,7 +305,8 @@ def run_batch(
         
         # Check for data integrity issues that should raise errors (vectorized)
         # Case 1: Alpha is not valid AND position is nonzero (data quality issue)
-        case1_mask = ~valid_alpha_row & (np.abs(prev_weights) > 1e-12)
+        # Universe-excluded symbols are allowed to have missing alpha; they are force-closed.
+        case1_mask = ~valid_alpha_row & (np.abs(prev_weights) > 1e-12) & eligible_row
         if np.any(case1_mask):
             bad_symbols = np.array(panel.symbols)[case1_mask]
             bad_positions = prev_weights[case1_mask]
@@ -324,14 +331,44 @@ def run_batch(
         
         # Use valid_price and valid_alpha to determine which symbols we can work with
         # Both price and alpha must be valid for a symbol to be included
-        valid_both = valid_price_row & valid_alpha_row
+        valid_both = valid_price_row & valid_alpha_row & eligible_row
         valid_indices = np.where(valid_both)[0]
 
         valid_alpha = alpha_row[valid_indices]
         
-        # If no valid alpha values, raise error
+        # If not enough eligible alphas, stay flat (also force-close excluded/invalid-price symbols).
         if len(valid_alpha) <= 1:
-            raise ValueError(f"Not enough valid alpha values at timestamp index {panel.timestamps[t]}. Cannot proceed.")
+            row_weights = np.zeros(n_symbols, dtype=float)
+            row_weights[case2_mask] = 0.0
+            row_weights[~eligible_row] = 0.0
+
+            delta = row_weights - prev_weights
+            if t == 0 and prev_positions is not None:
+                if np.any(np.abs(delta) > 1e-12):
+                    raise ValueError(
+                        f"weight not consistent at chunk boundary {panel.timestamps[t]}"
+                    )
+
+            turnover[t] = 0.5 * np.sum(np.abs(delta))
+
+            if np.any(np.abs(delta) > 1e-12):
+                changed = np.where(np.abs(delta) > 1e-12)[0]
+                timestamp = panel.timestamps[t]
+                for idx in changed:
+                    trade_rows.append(
+                        {
+                            "timestamp": timestamp,
+                            "symbol": panel.symbols[idx],
+                            "previous_position": prev_weights[idx],
+                            "target_position": row_weights[idx],
+                            "delta": delta[idx],
+                            "notional_delta": abs(delta[idx]),
+                        }
+                    )
+
+            weights[t] = row_weights
+            prev_weights = row_weights.copy()
+            continue
         
         # Compute alpha ranks (percentile)
         alpha_ranks = np.argsort(np.argsort(valid_alpha)) / (len(valid_alpha) - 1)
@@ -357,6 +394,9 @@ def run_batch(
         # Close positions that fall outside close_quantile and case 2
         row_weights[positions_to_close] = 0.0
         row_weights[case2_mask] = 0.0
+
+        # Force-close any symbol outside universe
+        row_weights[~eligible_row] = 0.0
         
         # Count current long and short positions
         current_long_indices = np.where(row_weights > 1e-12)[0]
@@ -398,6 +438,9 @@ def run_batch(
         # Set new weights
         row_weights[all_long_indices] = long_weights
         row_weights[all_short_indices] = short_weights
+
+        # Safety: enforce universe mask
+        row_weights[~eligible_row] = 0.0
 
         delta = row_weights - prev_weights
         
@@ -470,6 +513,8 @@ def run_batch(
             alpha_prev = alpha[t - 1]
             returns_curr = returns[t]
             valid_mask = ~np.isnan(alpha_prev) & ~np.isnan(returns_curr)
+            if getattr(panel, "universe", None) is not None:
+                valid_mask = valid_mask & panel.universe[t - 1].astype(bool, copy=False)
             
             if np.sum(valid_mask) >= 2:  # Need at least 2 points for correlation
                 alpha_valid = alpha_prev[valid_mask]

@@ -110,7 +110,12 @@ class AlphaLoader(DataLoader):
         if self._is_legacy:
             return self._alpha_names or []
         if self.alpha is not None:
-            return self.alpha.get_columns()
+            cols = self.alpha.get_columns()
+            # DataManager/AlphaRankSaver will rename a single generic column (often 'alpha')
+            # to the specific alpha name for storage.
+            if cols == ["alpha"]:
+                return [self.alpha.get_name()]
+            return cols
         return []
     
     def get_name(self) -> str:

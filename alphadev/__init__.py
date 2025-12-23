@@ -10,11 +10,11 @@ This package provides:
 Quick Start:
     from alphadev import BacktestConfig, BacktestRunner
     from alphadev.data import KlineDataLoader
-    from alphadev.alpha import AlphaStrategy
+    from alphadev.alpha import Alpha
     from datetime import date
     
     # Define your strategy
-    class MyStrategy(AlphaStrategy):
+    class MyStrategy(Alpha):
         @property
         def lookback(self) -> int:
             return 1440  # 1 day in minutes

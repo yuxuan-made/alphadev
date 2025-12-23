@@ -49,6 +49,32 @@ price_loader = KlineDataLoader(
 )
 ```
 
+### (Optional) Step 1b: Compute a Dynamic Universe
+
+If you want to dynamically filter tradable symbols (e.g., only trade symbols whose
+prior-day turnover exceeds a threshold), compute a universe mask first and cache it.
+
+```python
+from alphadev.data import DataManager
+from alphadev.alpha import DynamicUniverse
+from datetime import date
+from pathlib import Path
+
+manager = DataManager(feature_dir=Path('path/to/features'))
+
+# Requires raw data to include quote_volume/turnover (or close*volume)
+universe = DynamicUniverse(threshold_usdt=100_000_000)
+universe_mask = manager.get_feature(
+    feature=universe,
+    raw_data=market_data,
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 1, 31),
+    symbols=['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
+)
+
+# Tip: pass symbols=None to compute/cache the universe for all symbols present in raw_data.
+```
+
 Or if you have CSV files:
 
 ```python
@@ -131,6 +157,9 @@ config = BacktestConfig(
     # Data sources
     price_loader=price_loader,
     alpha_loaders=[price_loader],  # Use same loader for features
+
+    # Optional universe mask (mask symbols before ranking/positions)
+    # universe_loader=UniverseLoader(universe=DynamicUniverse(100_000_000), feature_dir=Path('path/to/features')),
     
     # Risk management (optional)
     beta_csv_path='',  # Leave empty if no beta neutralization
@@ -309,6 +338,10 @@ vol_data = manager.get_feature(
     end_date=date(2024, 1, 31),
     symbols=['BTCUSDT', 'ETHUSDT']
 )
+
+# Tip: pass symbols=None to use all symbols present in raw_data.
+# Note: if cache exists but some (symbol, date) files are missing in the requested range,
+# DataManager will backfill only the missing days (still computing only within start/end).
 
 # Second call: loads from cache (fast!)
 vol_data = manager.get_feature(...)

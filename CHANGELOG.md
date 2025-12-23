@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test Suite**: Comprehensive tests for DataManager functionality
   - `tests/test_data_manager.py`: Tests Get or Compute pattern
   - Validates cache hits, force recompute, and signature-based caching
+
+- **Universe (Dynamic Tradable Set)**
+  - `StaticUniverse`, `DynamicUniverse` (as `Feature`) with output column `in_universe`
+  - `UniverseLoader` for loading cached universe masks (same layout as other features)
+  - Backtest support: `BacktestConfig.universe_loader` (or `universe` + `universe_dir`) and masking before ranking/portfolio construction
+  - New test: `tests/test_universe_masking.py`
   
 ### Changed
 - **Feature Class**: Refactored to remove I/O dependencies
@@ -54,8 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added: `_normalize_columns()` static method for intelligent column renaming
   - Primary use: Research phase caching; production should use AlphaPublisher
 
+- **AlphaLoader (modern mode)**
+  - Modern `AlphaRankLoader(alpha=..., alpha_dir=...)` now exposes the saved alpha column name (usually `alpha.get_name()`) instead of the generic `"alpha"`.
+
 - **DataManager metadata**: Saves human-readable `metadata.json` alongside cached feature/alpha data
   - Includes notes, params, compute range, and timestamps for transparency
+
+- **DataManager caching behavior**
+  - `symbols=None` now means "use all symbols present in the input data" (raw_data / feature_data)
+  - If cache exists but some (symbol, date) files are missing in the requested date range, DataManager backfills only the missing days
 
 ### Fixed
 - Import paths for `AlphaRankLoader` in analysis module

@@ -12,7 +12,7 @@ from tqdm import tqdm
 from ..alpha import Alpha
 from ..core import BacktestResult, BacktestConfig, PanelData, assemble_panel
 from ..core.utils import frequency_to_periods_per_day
-from ..data import CompositeDataLoader, DataLoader
+from ..data import CompositeDataLoader, DataLoader, UniverseLoader
 from ..analysis import aggregate_chunks
 from .batch import run_batch
 from .streaming import StreamingEngine
@@ -34,6 +34,13 @@ class BacktestRunner:
         self.symbols = config.symbols
         self.price_loader = config.price_loader
         self.alpha_loaders = config.alpha_loaders
+
+        self.universe_loader = getattr(config, "universe_loader", None)
+        if self.universe_loader is None and getattr(config, "universe", None) is not None:
+            self.universe_loader = UniverseLoader(
+                universe=config.universe,
+                feature_dir=getattr(config, "universe_dir", None),
+            )
         
         self.alpha_data_loader = CompositeDataLoader(loaders=config.alpha_loaders, join_how='outer')
         self.lookback_periods = alpha_strategy.lookback  # Always in minutes
@@ -109,7 +116,8 @@ class BacktestRunner:
         
         self.alpha_strategy.reset()
         
-        with tqdm(total=5, desc="Batch Backtest", unit="stage", position=progress_position, leave=False) as pbar:
+        total_stages = 6 if self.universe_loader is not None else 5
+        with tqdm(total=total_stages, desc="Batch Backtest", unit="stage", position=progress_position, leave=False) as pbar:
             pbar.set_description("Loading price data")
             price_data = self.price_loader.load_date_range(start_date, end_date, self.symbols)
             if price_data.empty:
@@ -136,6 +144,16 @@ class BacktestRunner:
             if alpha.empty:
                 raise ValueError("No alpha values in backtest period!")
             pbar.update(1)
+
+            universe = None
+            if self.universe_loader is not None:
+                pbar.set_description("Loading universe mask")
+                universe = self.universe_loader.load_date_range(start_date, end_date, self.symbols)
+                if universe.empty:
+                    raise ValueError("No universe data loaded! Did you compute and save universe first?")
+                if "in_universe" not in universe.columns:
+                    raise ValueError("universe_loader must provide 'in_universe' column")
+                pbar.update(1)
             
             prices = price_data[['close']]
             
@@ -143,12 +161,17 @@ class BacktestRunner:
             # Downsample both prices and alpha to the target frequency
             prices_downsampled = self._downsample_data(prices, self.config.frequency)
             alpha_downsampled = self._downsample_data(alpha, self.config.frequency).reindex(prices_downsampled.index)
+
+            universe_downsampled = None
+            if universe is not None:
+                uni = universe[["in_universe"]].astype(float)
+                universe_downsampled = self._downsample_data(uni, self.config.frequency).reindex(prices_downsampled.index)
             if log:
                 print(f"After downsampling: {len(prices_downsampled)} price rows, {len(alpha_downsampled)} alpha rows")
             pbar.update(1)
             
             pbar.set_description("Running backtest")
-            panel = assemble_panel(prices_downsampled, alpha_downsampled)
+            panel = assemble_panel(prices_downsampled, alpha_downsampled, universe=universe_downsampled)
             result = run_batch(panel, self.config)
     
             summary = aggregate_chunks([result], save_dir=save_dir)
@@ -212,6 +235,14 @@ class BacktestRunner:
                 # Load current chunk data
                 price_chunk = self.price_loader.load_date_range(current_date, chunk_end, self.symbols)
                 alpha_data_chunk = self.alpha_data_loader.load_date_range(chunk_start_with_lookback, chunk_end, self.symbols)
+
+                universe_chunk = None
+                if self.universe_loader is not None:
+                    universe_chunk = self.universe_loader.load_date_range(current_date, chunk_end, self.symbols)
+                    if universe_chunk.empty:
+                        raise ValueError("No universe data loaded! Did you compute and save universe first?")
+                    if "in_universe" not in universe_chunk.columns:
+                        raise ValueError("universe_loader must provide 'in_universe' column")
                 
                 if price_chunk.empty or alpha_data_chunk.empty:
                     days_processed = (chunk_end - current_date).days + 1
@@ -233,19 +264,36 @@ class BacktestRunner:
                 # Downsample both prices and alpha to the target frequency
                 prices_downsampled = self._downsample_data(prices, self.config.frequency)
                 alpha_downsampled = self._downsample_data(alpha_trimmed, self.config.frequency)
+
+                universe_downsampled = None
+                if universe_chunk is not None:
+                    uni = universe_chunk[["in_universe"]].astype(float)
+                    universe_downsampled = self._downsample_data(uni, self.config.frequency)
                 
                 # Unstack to wide format: timestamps x symbols
                 prices_wide = prices_downsampled['close'].unstack(level='symbol').sort_index(axis=1).sort_index(axis=0)
                 alpha_wide = alpha_downsampled['alpha'].unstack(level='symbol').sort_index(axis=1).sort_index(axis=0)
 
+                universe_wide = None
+                if universe_downsampled is not None:
+                    universe_wide = (
+                        universe_downsampled['in_universe']
+                        .unstack(level='symbol')
+                        .reindex(index=prices_wide.index, columns=prices_wide.columns)
+                        .sort_index(axis=1)
+                        .sort_index(axis=0)
+                    )
+
                 assert alpha_wide.shape == prices_wide.shape, "Alpha and price data shapes do not match after downsampling and unstacking."
                 
                 # Concatenate with last row from previous chunk to create overlap
                 if last_row_data is not None:
-                    last_price_row, last_alpha_row = last_row_data
+                    last_price_row, last_alpha_row, last_universe_row = last_row_data
                     # Prepend last row as a DataFrame with one row
                     prices_wide = pd.concat([last_price_row.to_frame().T, prices_wide])
                     alpha_wide = pd.concat([last_alpha_row.to_frame().T, alpha_wide])
+                    if universe_wide is not None and last_universe_row is not None:
+                        universe_wide = pd.concat([last_universe_row.to_frame().T, universe_wide])
                 
                 # Assemble panel from wide format
                 timestamps = prices_wide.index
@@ -255,6 +303,7 @@ class BacktestRunner:
                     symbols=symbols,
                     close=prices_wide.to_numpy(copy=False),
                     alpha=alpha_wide.to_numpy(copy=False),
+                    universe=(universe_wide.fillna(False).astype(bool).to_numpy(copy=False) if universe_wide is not None else None),
                 )
                 
                 # Pass panel directly to engine
@@ -266,7 +315,8 @@ class BacktestRunner:
                     # Save last row for next chunk (as Series with symbols as index)
                     last_price_row = prices_wide.iloc[-1]
                     last_alpha_row = alpha_wide.iloc[-1]
-                    last_row_data = (last_price_row, last_alpha_row)
+                    last_universe_row = (universe_wide.iloc[-1] if universe_wide is not None else None)
+                    last_row_data = (last_price_row, last_alpha_row, last_universe_row)
                     
                     # Update progress bar description with performance metrics
                     pbar.set_postfix({

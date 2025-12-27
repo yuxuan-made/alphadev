@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Deprecated
+
+## [0.3.0]
+
+### Added
+- **ICAnalyzer (NEW)**: Standalone IC/IC-decay analysis without running full backtest
+  - `ICAnalyzer`: computes rank IC across multiple forward lags using `price_loader` + `alpha_loader`
+  - Location: `alphadev/analysis/ic_analyzer.py`
+
+- **Packaging (NEW)**: Added `requirements.txt` for pip-based installs (mirrors core dependencies from `pyproject.toml`).
+
+### Changed
+- **DataManager streaming-friendly compute (NEW)**
+  - `DataManager.get_feature()` and `DataManager.get_alpha()` now accept a `DataLoader`-like input and support chunked (date-sliced) compute + save
+  - Enable out-of-core / streaming-style feature & alpha computation by passing loaders instead of full in-memory DataFrames
+  - Key params: `chunk_days` (set to `None` to disable chunking) and `lookback_days` (feature buffer window)
+
+### Fixed
+- **Packaging**: Corrected `pyproject.toml` dependencies to reflect runtime requirements.
+
+### Deprecated
+
+## [0.2.0] - 2025-12-25
+
+### Added
 - **Alpha Publisher Implementation**: Three-stage alpha production workflow
   - `AlphaPublisher`: Consolidates cached alphas from individual signature directories into unified production format
     - `publish_alphas()`: Merge alphas into `{common_alphas_dir}/{symbol}/{date}.parquet`

@@ -7,8 +7,10 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [IC Analysis (NEW)](#ic-analysis-new)
 - [Architecture](#architecture)
 - [Data Loading](#data-loading)
+- [Out-of-core Feature/Alpha Compute (NEW)](#out-of-core-featurealpha-compute-new)
 - [Alpha Strategy Development](#alpha-strategy-development)
 - [Backtesting](#backtesting)
 - [Parameter Sweeps](#parameter-sweeps)
@@ -20,6 +22,7 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 
 - **Dual Execution Modes**: Batch (in-memory) and streaming (chunked) backtesting
 - **Feature Management**: Preprocess and cache market data features with automatic "get or compute" pattern
+- **Out-of-core compute (NEW)**: `DataManager.get_feature()` / `get_alpha()` accept loader inputs and can compute+save in date chunks to reduce peak memory
 - **Metadata-Rich Caching**: DataManager writes human-readable `metadata.json` alongside cached data (params, notes, ranges)
 - **Flexible Data Loading**: Support for CSV, Parquet, Kline data, and custom loaders
 - **Alpha Framework**: Base class system for implementing trading strategies
@@ -29,6 +32,7 @@ A flexible and efficient backtesting framework for alpha trading strategies with
 - **Storage Optimization**: Efficient compression with Parquet (ZSTD/Snappy+GZIP)
 - **Lazy Loading**: Save sequences to disk, load metrics only for memory efficiency
 - **Comprehensive Metrics**: Sharpe ratio, IC, turnover, leg-specific performance, and more
+- **IC Analyzer (NEW)**: Evaluate alpha predictive power (IC/IC-decay) without running a full backtest
 - **Alpha Publish Pipeline**: Distributed per-alpha caches plus optional consolidation via AlphaPublisher → CommonAlphasLoader for fast reads
 - **Universe Filtering (NEW)**: Compute and cache a dynamic tradable universe (e.g., prior-day turnover > 100M USDT) and mask symbols before ranking/portfolio construction
 
@@ -191,6 +195,7 @@ alpha_data = manager.get_alpha(
 # Tip: pass symbols=None to use all symbols present in feature_data
 # Note: if cache exists but some (symbol, date) files are missing in the requested range,
 # DataManager will backfill only the missing days.
+```
 
 ### 4a. Compute Universe (Static / Dynamic)
 
@@ -244,7 +249,6 @@ config = BacktestConfig(
 ```
 
 During backtest, symbols not in universe are masked out before alpha ranking and position selection.
-```
 
 ### 4b. Publish alphas for production (optional)
 
@@ -589,6 +593,72 @@ config = BacktestConfig(
 )
 ```
 
+## IC Analysis (NEW)
+
+`ICAnalyzer` 用于在不跑完整回测的情况下，快速评估 alpha 的预测能力：
+- Rank IC（Spearman）
+- IC Decay（不同 forward lag 的 IC）
+
+位置：`alphadev/analysis/ic_analyzer.py`，导出：`from alphadev.analysis import ICAnalyzer`。
+
+```python
+from alphadev.analysis import ICAnalyzer
+
+analyzer = ICAnalyzer(config)
+report = analyzer.run(lags=[1, 2, 3, 5, 10, 20])
+print(report)
+```
+
+> 说明：当前实现会一次性加载 `price_loader` 和 `alpha_loader` 覆盖的区间进行分析；如需超长区间的 out-of-core IC 分析，可以按 DataManager 的 chunking 模式扩展为分块计算。
+
+## Out-of-core Feature/Alpha Compute (NEW)
+
+除了回测引擎的 `mode='streaming'`（分块执行回测）外，`DataManager` 也支持“计算阶段”的分块：
+
+- `DataManager.get_feature(feature, raw_data=loader, ...)`
+- `DataManager.get_alpha(alpha, feature_data=loader, ...)`
+
+当 `raw_data` / `feature_data` 传入实现了 `load_date_range(start_date, end_date, symbols)` 的 loader 时，DataManager 会按日期分块：
+1) 每块仅加载 `load_start ~ chunk_end` 的必要数据（带 buffer）
+2) 计算 feature/alpha
+3) 裁剪掉 buffer 区间
+4) 立刻落盘（按日文件），释放内存
+
+关键参数：
+- `chunk_days`: 每块跨度（天）。设为 `None` 时关闭 chunking，走一次性全量加载/计算。
+- `lookback_days`（feature）：为了 rolling/窗口类特征提供的额外历史 buffer。
+- alpha 的 buffer：自动根据 `alpha.lookback` 推导（分钟→天）并增加安全边界。
+
+典型用法（按月分块计算并写入缓存）：
+
+```python
+from alphadev.data import DataManager
+from datetime import date
+
+manager = DataManager()
+
+# 以 loader 输入，实现 out-of-core 计算
+feat_df = manager.get_feature(
+    feature=my_feature,
+    raw_data=price_loader,
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+    symbols=['BTCUSDT', 'ETHUSDT'],
+    chunk_days=30,
+    lookback_days=10,
+)
+
+alpha_df = manager.get_alpha(
+    alpha=my_alpha,
+    feature_data=feature_loader,
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+    symbols=['BTCUSDT', 'ETHUSDT'],
+    chunk_days=30,
+)
+```
+
+> 提示：如果只想“生成缓存”而不是在内存里汇总返回，可以在上层调用处避免持有返回值，或只加载你关心的日期区间。
 
 ## Architecture
 ### Overall Data Flow
@@ -908,14 +978,20 @@ A:
 - Alpha: Generates trading signals from features (e.g., ranked momentum)
 Both are pure computation; DataManager handles all I/O.
 
-Raw Market Data
-    ↓
+## Requirements
+
 - Python >= 3.10
 - pandas >= 2.0.0
 - numpy >= 1.24.0
 - pyarrow >= 12.0.0
 - tqdm (for progress bars)
 - scipy (for rank correlation)
+- matplotlib (for plotting / ICAnalyzer)
+- ipdb (optional debugging utility)
+
+Dependency management:
+- Project dependencies are declared in `pyproject.toml`.
+- A `requirements.txt` is also provided for quick installs in environments that rely on pip requirements files.
 
 ## License
 

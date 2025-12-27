@@ -12,6 +12,10 @@ cd alphadev
 pip install -e .
 ```
 
+Notes on dependencies:
+- Canonical dependencies are in `pyproject.toml`.
+- `requirements.txt` is provided for quick `pip install -r requirements.txt` workflows.
+
 ### Development Installation
 
 ```bash
@@ -579,3 +583,50 @@ Now that you've run your first backtest, explore:
 - **Performance optimization** with feature caching via DataManager
 
 Happy backtesting! 🚀
+
+## (Optional) Chunked / Streaming-friendly Feature & Alpha Compute (NEW)
+
+当回测区间很长或内存有限时，除了回测的 `mode='streaming'` 以外，你也可以在“特征/alpha 计算阶段”使用分块（out-of-core）方式生成缓存：
+
+- 让 `DataManager.get_feature()` 的 `raw_data` 传入 loader（而不是一次性 DataFrame）
+- 让 `DataManager.get_alpha()` 的 `feature_data` 传入 loader
+
+```python
+from alphadev.data import DataManager
+from datetime import date
+
+manager = DataManager()
+
+# raw_data 使用 loader：按 chunk_days 分块加载 → 计算 → 落盘
+feature_df = manager.get_feature(
+    feature=vol_feature,
+    raw_data=price_loader,
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+    symbols=['BTCUSDT', 'ETHUSDT'],
+    chunk_days=30,
+    lookback_days=10,
+)
+
+# feature_data 使用 loader：按 chunk_days 分块加载 feature → 计算 alpha → 落盘
+alpha_df = manager.get_alpha(
+    alpha=SimpleMomentum(window=60),
+    feature_data=feature_loader,
+    start_date=date(2024, 1, 1),
+    end_date=date(2024, 12, 31),
+    symbols=['BTCUSDT', 'ETHUSDT'],
+    chunk_days=30,
+)
+```
+
+## (Optional) IC Analysis without Backtest (NEW)
+
+如果你只想快速看 alpha 的预测能力（Rank IC / IC Decay），可以直接用 `ICAnalyzer`：
+
+```python
+from alphadev.analysis import ICAnalyzer
+
+analyzer = ICAnalyzer(config)
+report = analyzer.run(lags=[1, 2, 3, 5, 10, 20])
+print(report)
+```
